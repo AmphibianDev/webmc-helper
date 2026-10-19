@@ -578,14 +578,111 @@ def vanilla_url(group, artifact, version, classifier=None, repo="https://librari
     return "%s/%s" % (repo, rel), rel
 
 
+class Registry:
+    """Every session this helper has run, and the mod jars they share.
+
+    A visitor may open two windows, or launch 1.21.11 next to 1.12.2, so "a session" is a thing the
+    helper has many of rather than a property of the helper itself.
+    """
+
+    def __init__(self, cfg, curl, log=print):
+        self.cfg = cfg
+        self.curl = curl
+        self.lock = threading.RLock()
+        self.sessions = {}
+        self.order = []
+        self.mods_dir = os.path.join(tempfile.gettempdir(), "webmc-mods-%d" % os.getpid())
+        os.makedirs(self.mods_dir, exist_ok=True)
+        self.pending_mods = []
+        self.pending_restore = None
+
+    def launch(self, opts):
+        sid = secrets.token_hex(3)
+        root = os.path.join("/tmp", "webmc-%s" % secrets.token_hex(4))
+        cfg = argparse.Namespace(**vars(self.cfg))
+        cfg.root = root
+        if opts.get("relay"):
+            cfg.relay = opts["relay"]
+        session = Session(cfg, self.curl, manager=self, sid=sid)
+        session.pending_restore = self.pending_restore
+        self.pending_restore = None
+        with self.lock:
+            self.sessions[sid] = session
+            self.order.append(sid)
+            while len(self.order) > 24:            # keep the page's list bounded
+                oldest = self.order.pop(0)
+                self.sessions.pop(oldest, None)
+        session.start(opts)
+        return session
+
+    def pick(self, sid=None):
+        with self.lock:
+            if sid and sid in self.sessions:
+                return self.sessions[sid]
+            if not self.order:
+                return None
+            for candidate in reversed(self.order):
+                session = self.sessions.get(candidate)
+                if session and session.state in ("running", "cancelling"):
+                    return session
+            return self.sessions.get(self.order[-1])
+
+    def list(self):
+        with self.lock:
+            return [self.sessions[sid].status() for sid in reversed(self.order)
+                    if sid in self.sessions]
+
+    def stop_all(self):
+        for session in list(self.sessions.values()):
+            try:
+                session.stop()
+            except Exception:
+                pass
+
+    def cleanup_all(self):
+        for session in list(self.sessions.values()):
+            try:
+                session.cleanup(why="the helper is stopping")
+            except Exception:
+                pass
+        shutil.rmtree(self.mods_dir, ignore_errors=True)
+
+    # ---- the mods a visitor handed over, shared by every session
+    def accept_mod(self, name, blob):
+        keeper = Session(self.cfg, self.curl, manager=self, sid="keeper")
+        return keeper.accept_mod(name, blob)
+
+    def drop_mod(self, name):
+        keeper = Session(self.cfg, self.curl, manager=self, sid="keeper")
+        return keeper.drop_mod(name)
+
+    def clear_mods(self):
+        keeper = Session(self.cfg, self.curl, manager=self, sid="keeper")
+        return keeper.clear_mods()
+
+    @property
+    def mods(self):
+        with self.lock:
+            return list(self.pending_mods)
+
+
 # --------------------------------------------------------------------------- session
 
 class Session:
-    """One sandbox, one game, one lifecycle."""
+    """One sandbox, one game, one lifecycle.
 
-    def __init__(self, cfg, curl):
+    More than one of these can be alive at once - two windows, two versions - so each session gets
+    its own Curl (its own downloads to abort) and its own sandbox, and shares only the mod jars the
+    visitor handed over and the proxy/relay settings.
+    """
+
+    def __init__(self, cfg, curl, manager=None, sid=None):
         self.cfg = cfg
-        self.curl = curl
+        # a private Curl, so stopping one session cannot abort another's downloads
+        self.curl = Curl(proxy=getattr(curl, "proxy", None))
+        self.curl.relay = getattr(cfg, "relay", None)
+        self.manager = manager
+        self.sid = sid or secrets.token_hex(3)
         self.lock = threading.RLock()
         self.lines = []
         self.state = "idle"          # idle|running|exited|cancelled|failed
@@ -814,6 +911,11 @@ class Session:
         try:
             self.log("sandbox: %s" % self.root)
             self._prepare_root()
+            if getattr(self, "pending_restore", None):
+                try:
+                    self.restore(self.pending_restore)
+                except Exception as exc:  # noqa: BLE001
+                    self.log("could not put the previous session back: %s" % exc)
             mc_version = opts["version"]
             required = 21
 
@@ -1691,6 +1793,10 @@ class Session:
     # ---------------------------------------------------------------- pushed mods
     @property
     def local_mods_dir(self):
+        """Where the jars the visitor handed over live. Shared by every session, because a mod
+        list belongs to the visitor rather than to one launch."""
+        if self.manager:
+            return self.manager.mods_dir
         return os.path.join(self.root, "localmods")
 
     def _pending_mod_paths(self):
@@ -1952,11 +2058,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.do_GET()
 
+    def _session(self, query):
+        """The session a request is about: ?id=… , or the newest one still working."""
+        sid = (query.get("id") or [None])[0]
+        return self.server.registry.pick(sid)
+
     def do_GET(self):
         parts = urllib.parse.urlsplit(self.path)
         path, query = parts.path, urllib.parse.parse_qs(parts.query)
-        s = self.server.session
-        s.touch()
+        reg = self.server.registry
+        s = self._session(query)
+        if s:
+            s.touch()
+        else:
+            reg.touch()
         if path == "/favicon.ico":
             return self._send(204)
         if path == "/":
@@ -1967,7 +2082,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json(200, {
                 "ok": True, "name": NAME, "version": VERSION,
                 "platform": {"os": os_name(), "arch": os_arch(), "version": os_version()},
-                "sandbox": self.server.session.root,
+                "sandbox": (s.root if s else reg.cfg.root),
+                "sessions": len(reg.sessions),
                 "proxy": self.server.curl.proxy or "direct",
                 "relay": s.cfg.relay or None,
                 "downloads": self.server.curl.bytes_in,
@@ -1977,7 +2093,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             })
         if not self._guard():
             return
+        if path == "/api/sessions":
+            return self._json(200, {"sessions": reg.list()})
         if path == "/api/status":
+            if not s:
+                return self._json(200, {"state": "idle", "phase": "idle", "phaseLabel": "Ready",
+                                        "progress": {"done": 0, "total": 0, "percent": None},
+                                        "instance": {}, "pid": None, "exitCode": None,
+                                        "result": None})
             return self._json(200, s.status())
         if path == "/api/search":
             q = (query.get("q") or [""])[0].strip()
@@ -1991,8 +2114,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json(200, {"mods": [{"name": m["name"], "bytes": m["bytes"],
                                               "title": m.get("title"),
                                               "version": m.get("version")}
-                                             for m in s.pending_mods],
-                                    "dir": s.local_mods_dir})
+                                             for m in reg.mods],
+                                    "dir": reg.mods_dir})
         if path == "/api/versions":
             try:
                 return self._json(200, s.versions())
@@ -2000,13 +2123,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(502, {"error": str(exc)})
         if path == "/api/log":
             since = int((query.get("since") or ["0"])[0] or 0)
+            if not s:
+                return self._json(200, {"lines": [], "next": since})
             lines, nxt = s.lines_since(since)
             return self._json(200, {"lines": lines, "next": nxt})
         if path == "/api/result":
+            if not s:
+                return self._json(404, {"error": "no session"})
             return self._json(200, {"result": s.result, "state": s.state,
                                     "exitCode": s.exit_code, "error": s.error})
         if path == "/api/bundle.zip":
-            if not s.result or not os.path.exists(s.bundle_path):
+            if not s or not s.result or not os.path.exists(s.bundle_path):
                 return self._json(404, {"error": "no bundle yet"})
             with open(s.bundle_path, "rb") as fh:
                 blob = fh.read()
@@ -2017,20 +2144,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         parts = urllib.parse.urlsplit(self.path)
         path, query = parts.path, urllib.parse.parse_qs(parts.query)
-        s = self.server.session
-        s.touch()
+        reg = self.server.registry
+        s = self._session(query)
+        if s:
+            s.touch()
+        else:
+            reg.touch()
         if not self._guard():
             return
         # ---- the mods a visitor brings with them
         if path == "/api/localmods":
             if (query.get("clear") or [""])[0]:
-                return self._json(200, s.clear_mods())
+                return self._json(200, reg.clear_mods())
             drop = (query.get("drop") or [""])[0]
             if drop:
-                return self._json(200, s.drop_mod(drop))
+                return self._json(200, reg.drop_mod(drop))
             name = self.headers.get("X-WebMC-Mod-Name") or "mod.jar"
             try:
-                return self._json(200, s.accept_mod(name, self._body()))
+                return self._json(200, reg.accept_mod(name, self._body()))
             except ValueError as exc:
                 return self._json(400, {"error": str(exc), "name": name})
         if path == "/api/launch":
@@ -2039,23 +2170,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "version": body.get("version") or DEFAULT_VERSION,
                 "loader": body.get("loader") or "auto",
                 "loaderKind": body.get("loaderKind") or "fabric",
-                "relay": body.get("relay") or self.server.session.cfg.relay,
+                "relay": body.get("relay") or self.server.registry.cfg.relay,
                 "mods": body.get("mods") or [],
                 "username": body.get("username") or "Player",
                 "memory": body.get("memory") or DEFAULT_MEMORY,
                 "assets": body.get("assets", True),
             }
             try:
-                s.start(opts)
-            except RuntimeError as exc:
-                return self._json(409, {"error": str(exc)})
-            return self._json(202, {"started": True, "instance": opts})
+                # Every launch is its own session, so a second window - or another version - can
+                # run while the first is still playing.
+                started = reg.launch(opts)
+            except Exception as exc:  # noqa: BLE001
+                return self._json(400, {"error": str(exc)})
+            return self._json(202, {"started": True, "id": started.sid, "instance": opts})
         if path == "/api/stop":
-            # One button, whichever state the session is in: mid-download it cancels, running
-            # it kills the game. The answer says which happened.
+            # One button, whichever state a session is in: mid-download it cancels, running it
+            # kills the game. With no session named it stops the newest one that is working.
+            if not s:
+                return self._json(200, {"cancelled": False, "note": "nothing is running"})
             return self._json(200, s.cancel())
         if path == "/api/restore":
             blob = self._body()
+            if not s:
+                # The page restores before it launches, so keep the bundle until then: the next
+                # launch unpacks it into its own sandbox before the game starts.
+                reg.pending_restore = blob
+                return self._json(200, {"queued": len(blob)})
             if not blob:
                 return self._json(400, {"error": "empty body"})
             try:
@@ -2063,6 +2203,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001
                 return self._json(400, {"error": "not a usable bundle: %s" % exc})
         if path == "/api/cleanup":
+            if not s:
+                return self._json(200, {"removed": 0, "gone": True, "already": True})
             return self._json(200, s.cleanup())
         return self._json(404, {"error": "no such endpoint", "path": path})
 
@@ -2072,7 +2214,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if (not page or not os.path.exists(page)) and _EMBEDDED_PAGE:
             # Self-healing: the sandbox (and the page written into it) is deleted when a session
             # ends, and the page has to come back for the next visit.
-            page = materialise_embedded_page(self.server.session.root) or page
+            page = materialise_embedded_page(os.environ.get("WEBMC_CLEANUP_DIR")
+                                             or os.path.dirname(self.server.registry.cfg.root)) or page
             self.server.page_path = page
         if not page or not os.path.exists(page):
             return self._json(200, {
@@ -2123,8 +2266,8 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, addr, handler, session, curl, token, page_path, origins, verbose):
-        self.session = session
+    def __init__(self, addr, handler, registry, curl, token, page_path, origins, verbose):
+        self.registry = registry
         self.curl = curl
         self.token = token
         self.page_path = page_path
@@ -2631,7 +2774,7 @@ def parse_args(argv):
     return ap.parse_args(argv)
 
 
-def enforce_deadlines(session, stop, log=print, every=10.0):
+def enforce_deadlines(registry, stop, log=print, every=10.0):
     """The safety net, actually enforced.
 
     Two jobs, both about a helper that is still running when nobody is watching:
@@ -2646,21 +2789,27 @@ def enforce_deadlines(session, stop, log=print, every=10.0):
         stop.wait(every)
         if stop.is_set():
             break
-        with session.lock:
-            deadline = session.cleanup_deadline
-            state = session.state
-            idle_for = time.time() - getattr(session, "last_touch", time.time())
-        if deadline and time.time() >= deadline and state != "running":
-            log("  the page has not collected this session by %s - deleting the sandbox"
-                % time.strftime("%H:%M:%S", time.localtime(deadline)))
-            session.cleanup(why="nobody collected it before the deadline")
-        idle_limit = getattr(session.cfg, "idle_exit", 0) or 0
-        if idle_limit and state != "running" and idle_for > idle_limit:
+        for session in list(registry.sessions.values()):
+            with session.lock:
+                deadline = session.cleanup_deadline
+                state = session.state
+            if deadline and time.time() >= deadline and state != "running":
+                log("  the page has not collected session %s by %s - deleting its sandbox"
+                    % (session.sid, time.strftime("%H:%M:%S", time.localtime(deadline))))
+                session.cleanup(why="nobody collected it before the deadline")
+        with registry.lock:
+            newest = registry.pick()
+        idle_for = time.time() - getattr(newest, "last_touch", time.time()) if newest else \
+            time.time() - getattr(registry, "started", time.time())
+        idle_limit = getattr(registry.cfg, "idle_exit", 0) or 0
+        busy = any(s.state == "running" for s in list(registry.sessions.values()))
+        if idle_limit and not busy and idle_for > idle_limit:
             log("  nothing has asked anything for %s - shutting down and leaving nothing behind"
                 % (("%.0f minutes" % (idle_for / 60.0)) if idle_for >= 120
                    else ("%.0f seconds" % idle_for)))
-            session.cleanup(why="the helper was idle")
-            # Reuse the ordinary shutdown path: the sandbox is deleted exactly once and the
+            for each in list(registry.sessions.values()):
+                each.cleanup(why="the helper was idle")
+            # Reuse the ordinary shutdown path so the sandbox is deleted exactly once and the
             # process disappears instead of becoming a stray background process.
             os.kill(os.getpid(), signal.SIGTERM)
             return
@@ -2727,11 +2876,12 @@ def main(argv=None):
         print("  hint: if this machine needs a SOCKS tunnel, run it on 127.0.0.1:1080")
         print("        or pass --proxy socks5h://host:port")
 
-    session = Session(cfg, curl)
+    registry = Registry(cfg, curl)
+    registry.started = time.time()
     page = args.page or default_page(cfg.root)
     token = secrets.token_hex(16)
     try:
-        httpd = Server((args.host, args.port), Handler, session, curl, token, page,
+        httpd = Server((args.host, args.port), Handler, registry, curl, token, page,
                        args.allow_origin, args.verbose)
     except OSError as exc:
         if exc.errno in (errno.EADDRINUSE, errno.EACCES):
@@ -2800,14 +2950,14 @@ def main(argv=None):
     try:
         stop_watchdog = threading.Event()
         watchdog = threading.Thread(
-            target=enforce_deadlines, args=(session, stop_watchdog), daemon=True)
+            target=enforce_deadlines, args=(registry, stop_watchdog), daemon=True)
         watchdog.start()
         httpd.serve_forever()
     except (KeyboardInterrupt, SystemExit):
         print("\n  shutting down")
     finally:
         stop_watchdog.set()
-        session.stop()
+        registry.stop_all()
         if not cfg.keep:
             session.cleanup()
         else:
