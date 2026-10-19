@@ -552,6 +552,7 @@ class Session:
         self.cleanup_deadline = None
         self.last_cleanup = None
         self.cancel_requested = False
+        self.last_touch = time.time()
         self.pending_mods = []      # jars the page pushed in, waiting for a launch
         self.java = None
         self.java_major = 0
@@ -680,6 +681,12 @@ class Session:
         self.curl.clear_abort()
         self.thread = threading.Thread(target=self._run, args=(opts,), daemon=True)
         self.thread.start()
+
+    def touch(self):
+        """Remember that somebody is still talking to us: the idle exit uses this, so a helper
+        nobody is driving disappears on its own instead of lingering as a background process."""
+        with self.lock:
+            self.last_touch = time.time()
 
     def _check_cancelled(self):
         if self.cancel_requested or self.curl.aborted():
@@ -1758,6 +1765,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         parts = urllib.parse.urlsplit(self.path)
         path, query = parts.path, urllib.parse.parse_qs(parts.query)
         s = self.server.session
+        s.touch()
         if path == "/favicon.ico":
             return self._send(204)
         if path == "/":
@@ -1818,6 +1826,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         parts = urllib.parse.urlsplit(self.path)
         path, query = parts.path, urllib.parse.parse_qs(parts.query)
         s = self.server.session
+        s.touch()
         if not self._guard():
             return
         # ---- the mods a visitor brings with them
@@ -2112,6 +2121,11 @@ def audit(root=None, cache=None, clean=False, log=print):
         log("  %-20s %d other webmc-* entries in the temp directory that this helper"
             % ("not ours", theirs))
         log("  %-20s did not create (the test suite's webmc-site-* and friends)." % "")
+    log("  %-20s %s" % ("writes to", (root or "/tmp/webmc-<random>/") +
+                                        " - and nothing else; that path is deleted when "
+                                        "the session ends"))
+    log("  %-20s %s" % ("privileges", "none needed: no sudo, no installer, no launch agent, "
+                                      "no write outside /tmp; it listens on 127.0.0.1 only"))
     log("")
     if clean:
         removed = 0
@@ -2203,6 +2217,10 @@ def parse_args(argv):
                     help="say what this project has left on the machine, then exit")
     ap.add_argument("--audit-clean", action="store_true",
                     help="with --audit: remove every leftover (never a running session)")
+    ap.add_argument("--idle-exit", type=int, default=0, metavar="SECONDS",
+                    help="shut down after this long with nobody using the page (0 = never; the "
+                         "background launcher passes 1800 so a backgrounded helper does not "
+                         "outlive its usefulness)")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--print-token", action="store_true")
     return ap.parse_args(argv)
@@ -2211,10 +2229,13 @@ def parse_args(argv):
 def enforce_deadlines(session, stop, log=print, every=10.0):
     """The safety net, actually enforced.
 
-    The page normally deletes the sandbox as soon as it has the session's files. If it
-    never comes back - tab closed, browser crashed, visitor walked away - the helper has
-    to do it itself, or the whole promise quietly fails. This watches the deadline that
-    the session sets and deletes when it passes.
+    Two jobs, both about a helper that is still running when nobody is watching:
+
+    * the page normally deletes the sandbox as soon as it has the session's files. If it never
+      comes back - tab closed, browser crashed, visitor walked away - the helper has to do it
+      itself, or the whole promise quietly fails.
+    * a helper started in the background has to end when its page is gone, or "nothing left
+      behind" would be true of the game and false of the thing that ran it.
     """
     while not stop.is_set():
         stop.wait(every)
@@ -2223,13 +2244,31 @@ def enforce_deadlines(session, stop, log=print, every=10.0):
         with session.lock:
             deadline = session.cleanup_deadline
             state = session.state
-        if not deadline or time.time() < deadline:
-            continue
-        if state == "running":
-            continue
-        log("  the page has not collected this session by %s - deleting the sandbox"
-            % time.strftime("%H:%M:%S", time.localtime(deadline)))
-        session.cleanup(why="nobody collected it before the deadline")
+            idle_for = time.time() - getattr(session, "last_touch", time.time())
+        if deadline and time.time() >= deadline and state != "running":
+            log("  the page has not collected this session by %s - deleting the sandbox"
+                % time.strftime("%H:%M:%S", time.localtime(deadline)))
+            session.cleanup(why="nobody collected it before the deadline")
+        idle_limit = getattr(session.cfg, "idle_exit", 0) or 0
+        if idle_limit and state != "running" and idle_for > idle_limit:
+            log("  nothing has asked anything for %s - shutting down and leaving nothing behind"
+                % (("%.0f minutes" % (idle_for / 60.0)) if idle_for >= 120
+                   else ("%.0f seconds" % idle_for)))
+            session.cleanup(why="the helper was idle")
+            # Reuse the ordinary shutdown path: the sandbox is deleted exactly once and the
+            # process disappears instead of becoming a stray background process.
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+
+
+def already_running(host, port):
+    """Is the thing on that port one of ours? Asked politely, without curl."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen("http://%s:%d/api/hello" % (host, port), timeout=3) as r:
+            return json.loads(r.read().decode("utf-8", "replace")).get("name") == NAME
+    except Exception:
+        return False
 
 
 def main(argv=None):
@@ -2277,6 +2316,22 @@ def main(argv=None):
                        args.allow_origin, args.verbose)
     except OSError as exc:
         if exc.errno in (errno.EADDRINUSE, errno.EACCES):
+            # Being already started is not an error: it is what happens when somebody opens the
+            # launcher twice, or double-clicks it again after using it earlier.
+            if already_running(args.host, args.port):
+                url = "http://%s:%d/" % (args.host, args.port)
+                print("  a helper is already running there - opening its page instead of "
+                      "starting a second one")
+                target = url
+                if args.page_url:
+                    target = "%sgo?to=%s" % (url, urllib.parse.quote(args.page_url, safe=""))
+                opener = "open" if os_name() == "osx" else ("start" if os_name() == "windows"
+                                                           else "xdg-open")
+                try:
+                    subprocess.run([opener, target])
+                except Exception:
+                    print("  open %s yourself" % target)
+                return 0
             print("  ERROR: cannot listen on %s:%d - %s" % (args.host, args.port, exc))
             print("  hint: something else is on that port; use --port 7646")
             return 2
