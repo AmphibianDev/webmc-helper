@@ -2269,7 +2269,7 @@ def agent_plist_text(python, helper, page_url, port):
        esc(os.path.expanduser(LOG_FILE)), esc(os.path.expanduser(LOG_FILE)))
 
 
-def install(base_dir, page_url=None, port=7645, log=print, open_page=True):
+def install(source_py, page_url=None, port=7645, log=print, open_page=True):
     """Install for a Mac with no terminal in the way.
 
     macOS runs a user's own launch agents without an administrator, so this needs no
@@ -2285,7 +2285,7 @@ def install(base_dir, page_url=None, port=7645, log=print, open_page=True):
         log("  --install is the macOS path; elsewhere run it however you start things")
         return 1
     paths = installed_paths()
-    # Already up (a second double-click, or an app opened twice): do not start a second one on
+    # Already up (a second double-click, or an opened file again): do not start a second one on
     # the same port and report it as a failure.
     if already_running("127.0.0.1", port):
         log("  a helper is already running on 127.0.0.1:%d - nothing to do" % port)
@@ -2296,18 +2296,22 @@ def install(base_dir, page_url=None, port=7645, log=print, open_page=True):
             threading.Timer(0.8, lambda: subprocess.run(["open", url])).start()
         return 0
     os.makedirs(os.path.join(paths["dir"], "helper"), exist_ok=True)
-    os.makedirs(os.path.join(paths["dir"], "page"), exist_ok=True)
-    for rel, mode in SHIPPED:
-        src = os.path.join(base_dir, rel)
-        if not os.path.exists(src):
-            log("  %s is missing; nothing installed" % src)
-            return 2
-        dst = os.path.join(paths["dir"], rel)
-        shutil.copy2(src, dst)
-        os.chmod(dst, mode)
-    log("  copied the helper to %s" % paths["dir"])
-
+    if not source_py or not os.path.exists(source_py):
+        log("  cannot find the helper to install (%s)" % source_py)
+        return 2
+    import re as _re
+    text = open(source_py, "rb").read()
+    if b"_EMBEDDED_PAGE = \"\"" in text:
+        # A copy from the repository cannot serve its own page; the single-file build can, because
+        # the page is inside it. Installing the repository copy is still fine (it keeps whatever
+        # page sits next to it), so only the missing-page case is worth a word.
+        log("  note: this copy has no page inside it; install the downloadable file instead if "
+            "you want the helper to serve its own page")
     helper = os.path.join(paths["dir"], "helper", "webmc_helper.py")
+    with open(helper, "wb") as fh:
+        fh.write(text)
+    os.chmod(helper, 0o755)
+    log("  installed the helper to %s" % helper)
     plist = agent_plist_text(sys.executable or "/usr/bin/python3", helper,
                              page_url, port)
     os.makedirs(os.path.dirname(paths["plist"]), exist_ok=True)
@@ -2568,8 +2572,10 @@ def parse_args(argv):
     ap.add_argument("--dry-run", action="store_true",
                     help="download everything, build the command, do not start the game")
     ap.add_argument("--install", action="store_true",
-                    help="macOS: copy this into Application Support, start it with launchd now "
-                         "and at every login, so nothing has to be run by hand (no admin needed)")
+                    help="macOS: keep this helper in Application Support and let launchd start it "
+                         "now and at every login, so nothing has to be run by hand (no admin)")
+    ap.add_argument("--install-source", default=None, metavar="PATH",
+                    help="with --install: the file to install (default: this one)")
     ap.add_argument("--uninstall", action="store_true",
                     help="remove what --install put there (and any leftover sandbox)")
     ap.add_argument("--audit", action="store_true",
@@ -2642,7 +2648,7 @@ def main(argv=None):
     # read it, that copy has no reason to exist: delete it, so "it leaves nothing behind" is true
     # of the helper as well as of the game.
     _self = os.environ.get("WEBMC_SELF_DELETE")
-    if _self:
+    if _self and not args.install:
         try:
             os.unlink(_self)
         except OSError:
@@ -2658,8 +2664,8 @@ def main(argv=None):
         return 0
 
     if args.install:
-        return install(os.path.dirname(os.path.abspath(__file__)) + os.sep + os.pardir,
-                       page_url=args.page_url, port=args.port)
+        source = args.install_source or globals().get("__file__")
+        return install(source, page_url=args.page_url, port=args.port)
 
     print("")
     print("  %s %s" % (NAME, VERSION))
