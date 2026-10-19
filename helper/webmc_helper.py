@@ -90,6 +90,12 @@ LOADER_METADATA = {
     "neoforge": "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml",
 }
 LOADER_KINDS = ("fabric", "forge", "neoforge", "none")
+# What this helper will actually launch. Forge and NeoForge are resolved, downloaded and merged
+# below - that part works and was verified as far as their bootstrap - but neither ships a usable
+# client jar: their own installer runs installertools over the vanilla jar to produce
+# client-<mc>-<stamp>-srg.jar and ...-extra.jar, and the bootstrap refuses to start without them.
+# Until that patch step is implemented, they are refused up front rather than half-launched.
+SUPPORTED_LOADERS = ("fabric", "none")
 MODRINTH_API = "https://api.modrinth.com/v2"
 ADOPTIUM_API = "https://api.adoptium.net/v3"
 
@@ -1247,6 +1253,13 @@ class Session:
             return self._fabric_profile(mc_version, loader)
         if kind not in LOADER_KINDS:
             raise RuntimeError("unknown loader %r (known: %s)" % (kind, ", ".join(LOADER_KINDS)))
+        if kind not in SUPPORTED_LOADERS:
+            raise RuntimeError(
+                "%s is not supported yet: its build resolves and its libraries download, but the "
+                "client jar it needs (client-<mc>-<stamp>-srg.jar) is produced by its own "
+                "installertools patch step, which this helper does not run. Use "
+                "--loader-kind fabric - which is the loader most mods are published for - or "
+                "watch the repository for this." % kind)
 
         want = None if str(loader).lower() in ("auto", "latest", "newest", "stable", "", "none") \
             else str(loader)
@@ -2428,7 +2441,8 @@ def parse_args(argv):
     ap.add_argument("--version", default=DEFAULT_VERSION,
                     help="Minecraft version (default %s)" % DEFAULT_VERSION)
     ap.add_argument("--loader-kind", default="fabric",
-                    help="which loader: fabric (default), forge, neoforge, or none for vanilla")
+                    help="which loader: fabric (default) or none for vanilla. Forge and NeoForge "
+                         "are refused until their client-patching step is implemented")
     ap.add_argument("--loader", default="auto",
                     help="loader version, or 'auto'/'stable'/'latest' for the newest suitable "
                          "build of the chosen kind")

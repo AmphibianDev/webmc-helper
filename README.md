@@ -107,8 +107,6 @@ The useful flags, when started by hand:
 ```sh
 python3 webmc_helper.py --server-only                 # wait for the page instead of launching now
 python3 webmc_helper.py --launch --loader-kind fabric --mods fabric-api,modmenu
-python3 webmc_helper.py --launch --loader-kind neoforge --loader 21.11.48
-python3 webmc_helper.py --launch --loader-kind forge --loader 61.2.4
 python3 webmc_helper.py --launch --version 1.12.2 --loader-kind fabric --no-assets
 python3 webmc_helper.py --launch --mod-jar ~/Downloads/sodium.jar
 WEBMC_CACHE=1 ./start-helper.command                  # keep the asset cache between runs
@@ -118,16 +116,23 @@ python3 webmc_helper.py --uninstall                   # remove anything it did l
 
 ## Mod loaders
 
-| Loader | State |
-| --- | --- |
-| **Fabric** | works: any version Fabric supports, mods fetched from Modrinth or handed over as jars |
-| **Forge** | resolves the build, reads its version document, downloads the libraries and builds the command — but Forge does not ship a usable client jar: its own installer runs `installertools` over the vanilla jar to produce `client-<mc>-<stamp>-srg.jar` and `-extra.jar`, and the bootstrap refuses to start without them. Not finished here yet. |
-| **NeoForge** | same shape as Forge, same missing step (`NeoForge installation is corrupted` is FML saying exactly that) |
-| Legacy Fabric / Forge for 1.12.2 and older | works on the Fabric side (Legacy Fabric is an ordinary profile); Forge needs the same patch step as above |
+**Fabric, for now.** It is the loader most mods are published for, and it is the one that works
+end to end here: any version Fabric supports, mods fetched from Modrinth by slug or handed over as
+`.jar` files, loaded at play time by a real JVM.
 
-The loader is chosen with `--loader-kind` (`fabric`, `forge`, `neoforge`, `none`) and the build
-with `--loader` (`auto` for the newest for that Minecraft version, or an exact version). The page
-offers the same choice.
+**Forge and NeoForge are not supported yet.** The resolution is written and was verified: the
+build list comes from their Maven, the version document is read straight out of their own
+installer jar, the libraries download and the launch command is built — FML starts and loads its
+early services. But neither loader ships a usable client jar: their installer runs
+`installertools` over the vanilla jar to produce `client-<mc>-<stamp>-srg.jar` and `...-extra.jar`,
+and the bootstrap refuses to start without them. Until the helper runs that patch step, asking for
+those loaders is refused with that explanation rather than half-launched.
+
+Doing it needs no Java networking: every input can be fetched with curl (which speaks the proxy
+properly, unlike Java's SOCKS client, which fails against an SSH tunnel with "Malformed reply from
+SOCKS server") and the patch step run against local files.
+
+## Where your mods go
 
 ## The page works in two places
 

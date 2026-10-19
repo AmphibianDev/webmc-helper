@@ -790,6 +790,7 @@ async function launch(){
     }
     await api("/api/launch", { method:"POST", body: JSON.stringify({
       version: $("version").value || "1.21.11",
+      loaderKind: "fabric",          // the only loader this helper launches today
       loader: loader,
       mods: state.slugs,
       username: $("username").value.trim() || "Player",
