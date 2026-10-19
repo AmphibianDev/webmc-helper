@@ -595,6 +595,8 @@ class Registry:
         os.makedirs(self.mods_dir, exist_ok=True)
         self.pending_mods = []
         self.pending_restore = None
+        self.started = time.time()
+        self.last_touch = self.started
 
     def launch(self, opts):
         sid = secrets.token_hex(3)
@@ -614,6 +616,12 @@ class Registry:
                 self.sessions.pop(oldest, None)
         session.start(opts)
         return session
+
+    def touch(self):
+        """The idle exit asks whether anybody is still using the helper at all, which is a
+        question about the helper rather than about one of its sessions."""
+        with self.lock:
+            self.last_touch = time.time()
 
     def pick(self, sid=None):
         with self.lock:
@@ -767,6 +775,7 @@ class Session:
         with self.lock:
             total = self.total or 0
             data = {
+                "sid": self.sid,
                 "state": self.state,
                 "phase": self.phase,
                 "phaseLabel": self.phase_label,
@@ -2085,7 +2094,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "sandbox": (s.root if s else reg.cfg.root),
                 "sessions": len(reg.sessions),
                 "proxy": self.server.curl.proxy or "direct",
-                "relay": s.cfg.relay or None,
+                "relay": (s.cfg.relay if s else reg.cfg.relay) or None,
                 "downloads": self.server.curl.bytes_in,
                 "autocleanSeconds": s.cfg.autoclean,
                 "features": ["fabric", "real-jvm", "opfs-bundle", "restore", "modrinth",
@@ -2799,8 +2808,8 @@ def enforce_deadlines(registry, stop, log=print, every=10.0):
                 session.cleanup(why="nobody collected it before the deadline")
         with registry.lock:
             newest = registry.pick()
-        idle_for = time.time() - getattr(newest, "last_touch", time.time()) if newest else \
-            time.time() - getattr(registry, "started", time.time())
+        label = newest.last_touch if newest else registry.last_touch
+        idle_for = time.time() - label
         idle_limit = getattr(registry.cfg, "idle_exit", 0) or 0
         busy = any(s.state == "running" for s in list(registry.sessions.values()))
         if idle_limit and not busy and idle_for > idle_limit:
