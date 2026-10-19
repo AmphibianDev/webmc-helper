@@ -66,6 +66,7 @@ import socketserver
 import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -2776,13 +2777,24 @@ def main(argv=None):
         # it. Deleting that staging directory here is what makes "nothing left behind" include the
         # helper as well as the game.
         staging = os.environ.get("WEBMC_CLEANUP_DIR")
-        if staging and os.path.isdir(staging) and os.path.abspath(staging).startswith("/tmp/"):
-            size = sum(os.path.getsize(os.path.join(b, f))
-                       for b, _d, fs in os.walk(staging) for f in fs
-                       if os.path.exists(os.path.join(b, f)))
-            shutil.rmtree(staging, ignore_errors=True)
-            print("  removed the staging directory %s (%.1f MB)"
-                  % (staging, size / 1048576.0))
+        here = os.path.abspath(staging) if staging else None
+        tempdirs = {os.path.abspath(os.environ.get("TMPDIR", "/tmp")), "/tmp", "/private/tmp",
+                    os.path.abspath(tempfile.gettempdir())}
+        # Only ever remove a directory this helper's own launcher made: a direct child of a temp
+        # directory, named webmc.<something>. The first version of this checked for a "/tmp/" prefix
+        # and therefore never fired on macOS, where the staging directory is under /var/folders.
+        remove_staging = bool(here and os.path.basename(here).startswith("webmc.")
+                              and os.path.dirname(here) in tempdirs and os.path.isdir(here))
+        if remove_staging:
+            size = 0
+            for base, _dirs, files in os.walk(here):
+                for f in files:
+                    try:
+                        size += os.path.getsize(os.path.join(base, f))
+                    except OSError:
+                        pass
+            shutil.rmtree(here, ignore_errors=True)
+            print("  removed the staging directory %s (%.1f MB)" % (here, size / 1048576.0))
     return 0
 
 

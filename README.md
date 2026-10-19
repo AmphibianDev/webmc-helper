@@ -84,6 +84,54 @@ python3 webmc_helper.py --audit --audit-clean      # remove leftovers; touches n
 The audit claims only what this helper makes — a sandbox, or a stray curl config — and reports
 anything else that merely shares the `webmc-` prefix as a count it does not touch.
 
+## What this asks of the machine
+
+| | |
+| --- | --- |
+| **bash, curl, tar** | required - all three ship with macOS and with Windows 10+ |
+| **Python** | only used if the machine already has it; otherwise a relocatable CPython (26 MB on macOS, 46 MB on Windows) is fetched into the session's own folder |
+| **Java** | never required - the JRE is fetched into that same folder |
+| **Xcode command line tools, Homebrew, administrator rights** | never |
+
+So a machine with nothing but a stock shell can run this. Everything it downloads - the Python
+runtime, the helper, the Java runtime, the client, the libraries, the assets - goes into one
+staging directory under the temp folder, and the helper deletes the whole directory when the
+session ends. Measured on a Mac with no Python and no Java:
+
+```
+This machine has no Python 3, so webmc-helper is fetching one into its own folder:
+    /var/folders/.../T/webmc.KHQ3rU
+Nothing is installed, and it is deleted with the rest when the session ends.
+...
+Loading Minecraft 1.21.11 with Fabric Loader 0.19.5
+Sound engine started
+--- after the session --- staging gone: yes   sandbox gone: yes   0 left behind
+```
+
+## Why not just use SKLauncher?
+
+Honest answer: **if you want a launcher, use a launcher.** [SKLauncher](https://sklauncher.com/),
+[Prism Launcher](https://prismlauncher.org/), [MultiMC](https://multimc.org/),
+[ATLauncher](https://atlauncher.com/), [Modrinth App](https://modrinth.com/app) and Mojang's own
+launcher are all better at being launchers than this is: more features, more loaders, more help
+when something goes wrong. Nothing here replaces them, and the README of any project that claimed
+otherwise would be lying.
+
+What this does that they do not:
+
+* **Leaves nothing behind.** The game, the Java runtime, the Python runtime and the helper live in
+  one temp directory that is deleted when the session ends, and your world lives in your browser.
+  A normal launcher installs itself, keeps `~/.minecraft`, and stays.
+* **Needs nothing installed.** No Java, no Python, no Xcode tools, no administrator. A stock Mac
+  or Windows machine with a shell is enough.
+* **Is a web page.** The interface can be updated without anybody re-downloading anything, and the
+  same page can drive a session on any machine that has the helper running.
+
+Use a real launcher when the machine is yours and you want a permanent installation with all the
+features. Use this when you want to play *with mods* on a machine you would rather not change -
+a borrowed laptop, a school machine you are allowed to run things on, or your own computer when
+you simply do not want a Minecraft folder in it.
+
 ## Two ways to start it, both leaving nothing behind
 
 **The clean one, on a Mac: a Shortcut.** It fetches the helper into `/tmp` and runs it there, so
