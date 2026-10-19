@@ -459,6 +459,9 @@ const jget = async (p, t) => (await api(p, { timeout: t })).json();
 function setConn(kind, text){ $("cd").className = "dot " + kind; $("ct").textContent = text; }
 
 function showOffline(kind){
+  // Play stays usable even with no helper: in a hosted copy it hands the tab over, which is the
+  // one route a public page is allowed (a fetch and a frame are both refused).
+  $("play").disabled = false;
   $("offline").style.display = "";
   const t = $("offlinetext");
   if (kind === "token"){
