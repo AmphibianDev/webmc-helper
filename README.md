@@ -86,63 +86,48 @@ anything else that merely shares the `webmc-` prefix as a count it does not touc
 
 ## Run it on this machine
 
-There is no terminal in this path, on purpose. Download **[WebMC Helper.zip]**, unzip it, and
-double-click **WebMC Helper.app**. That is the whole setup:
-
-1. it copies itself into `~/Library/Application Support/webmc`,
-2. writes one user launch agent (a plist in `~/Library/LaunchAgents`),
-3. asks launchd to start it now and at every login,
-4. opens the launcher page.
-
-From then on the page finds a helper already running. Close the app, close the browser, reboot:
-it is there. The game still runs in a throwaway directory under `/tmp` and that directory is
-deleted when a session ends — the only things that persist are those two small files, and
-`--uninstall` removes both:
+**Nothing is installed.** The download is the helper: unzip it anywhere, double-click
+`webmc-helper/helper/start-helper.command`, and it starts in the background and closes its own
+window. Nothing is added to your home directory, no login item is created, and when you are done
+you can delete the folder — there is nothing else to undo.
 
 ```sh
-python3 "$HOME/Library/Application Support/webmc/helper/webmc_helper.py" --uninstall
-python3 "$HOME/Library/Application Support/webmc/helper/webmc_helper.py" --audit
-```
-
-**Nothing here needs an administrator.** macOS runs a user's own launch agents without one, and
-this writes only inside your home directory and `/tmp`. What it touches, verbatim from `--audit`:
-
-```
-  writes to            /tmp/webmc-<random>/ - and nothing else; that path is deleted when the session ends
-  privileges           none: no sudo, no administrator, no installer, no write outside /tmp and your own home
-  installed            /Users/you/Library/Application Support/webmc
-                       /Users/you/Library/LaunchAgents/dev.amphibian.webmc-helper.plist
-                       installed on purpose so the page always finds a helper; remove both with --uninstall
-```
-
-The first launch may still meet Gatekeeper ("Apple could not verify..."). Right-click the app and
-choose **Open** once; that is the cost of an unsigned download, and a Developer ID signature is
-what removes it.
-
-In the zip: the app (which carries the helper, the page it serves, and a
-`helper/start-helper.command` for anyone who prefers a terminal) and this README. Nothing else —
-no tests, no templates, no build output, and a drift test asserts that file list.
-
-For anyone starting it by hand instead, everything below still works.
-
-```sh
-cd "$HOME/Library/Application Support/webmc/helper"   # or wherever you kept it
-./start-helper.command            # Finder: runs in the background and closes its own window
-WEBMC_FOREGROUND=1 ./start-helper.command             # or watch it in a terminal
-python3 webmc_helper.py --install                     # the app's own install step
+cd webmc-helper/helper
+./start-helper.command            # starts in the background, window closes itself
+WEBMC_FOREGROUND=1 ./start-helper.command    # or watch it in the terminal
 python3 webmc_helper.py --help
 ```
+
+It ends by itself: shortly after a session finishes (or after half an hour with nobody using the
+page), the helper deletes its sandbox and exits. There is no daemon, no menu bar icon, and no
+process left running when you are not playing.
 
 The useful flags, when started by hand:
 
 ```sh
 python3 webmc_helper.py --server-only                 # wait for the page instead of launching now
-python3 webmc_helper.py --launch --mods fabric-api,modmenu
-python3 webmc_helper.py --launch --loader 0.19.5 --no-assets
+python3 webmc_helper.py --launch --loader-kind fabric --mods fabric-api,modmenu
+python3 webmc_helper.py --launch --loader-kind neoforge --loader 21.11.48
+python3 webmc_helper.py --launch --loader-kind forge --loader 61.2.4
+python3 webmc_helper.py --launch --version 1.12.2 --loader-kind fabric --no-assets
 python3 webmc_helper.py --launch --mod-jar ~/Downloads/sodium.jar
 WEBMC_CACHE=1 ./start-helper.command                  # keep the asset cache between runs
-python3 webmc_helper.py --print-token --page-url https://derek.github.io/webmc/
+python3 webmc_helper.py --audit                       # what it has on the machine, if anything
+python3 webmc_helper.py --uninstall                   # remove anything it did leave
 ```
+
+## Mod loaders
+
+| Loader | State |
+| --- | --- |
+| **Fabric** | works: any version Fabric supports, mods fetched from Modrinth or handed over as jars |
+| **Forge** | resolves the build, reads its version document, downloads the libraries and builds the command — but Forge does not ship a usable client jar: its own installer runs `installertools` over the vanilla jar to produce `client-<mc>-<stamp>-srg.jar` and `-extra.jar`, and the bootstrap refuses to start without them. Not finished here yet. |
+| **NeoForge** | same shape as Forge, same missing step (`NeoForge installation is corrupted` is FML saying exactly that) |
+| Legacy Fabric / Forge for 1.12.2 and older | works on the Fabric side (Legacy Fabric is an ordinary profile); Forge needs the same patch step as above |
+
+The loader is chosen with `--loader-kind` (`fabric`, `forge`, `neoforge`, `none`) and the build
+with `--loader` (`auto` for the newest for that Minecraft version, or an exact version). The page
+offers the same choice.
 
 ## The page works in two places
 

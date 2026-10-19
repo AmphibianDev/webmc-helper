@@ -78,6 +78,18 @@ NAME = "webmc-helper"
 MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 RESOURCES_URL = "https://resources.download.minecraft.net"
 FABRIC_META = "https://meta.fabricmc.net/v2"
+# Forge and NeoForge publish a version document *inside their installer jar*, which is what a
+# launcher needs - no installation step, no patching by hand. Reading it out is what makes the
+# other two loaders the same shape as Fabric here.
+LOADER_MAVEN = {
+    "forge": "https://maven.minecraftforge.net/",
+    "neoforge": "https://maven.neoforged.net/releases/",
+}
+LOADER_METADATA = {
+    "forge": "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml",
+    "neoforge": "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml",
+}
+LOADER_KINDS = ("fabric", "forge", "neoforge", "none")
 MODRINTH_API = "https://api.modrinth.com/v2"
 ADOPTIUM_API = "https://api.adoptium.net/v3"
 
@@ -793,10 +805,13 @@ class Session:
             assets_ok = self._assets(vjson, opts.get("assets", True))
 
             # ---- fabric
-            loader_ver = opts.get("loader") or "stable"
-            profile, loader_ver = self._fabric_profile(mc_version, loader_ver)
-            fabric_libs = self._fabric_libraries(profile)
-            all_libs = libs + fabric_libs
+            loader_kind = (opts.get("loaderKind") or "fabric").lower()
+            if loader_kind in ("none", "vanilla"):
+                loader_kind = "none"
+            loader_ver = opts.get("loader") or "auto"
+            profile, loader_ver = self._loader_profile(loader_kind, mc_version, loader_ver)
+            loader_libs = self._profile_libraries(profile)
+            all_libs = libs + loader_libs
 
             # ---- mods
             mods = self._mods(opts.get("mods") or [], mc_version, loader_ver)
@@ -840,7 +855,7 @@ class Session:
             self.pid = self.proc.pid
             self.instance = {
                 "version": mc_version,
-                "loader": "fabric-%s" % loader_ver,
+                "loader": ("%s-%s" % (loader_kind, loader_ver)) if loader_kind != "none" else "vanilla",
                 "mods": [m["name"] for m in mods],
                 "username": opts.get("username") or "Player",
                 "memory": opts.get("memory") or DEFAULT_MEMORY,
@@ -1138,70 +1153,67 @@ class Session:
         return True
 
     def _fabric_profile(self, mc_version, loader):
-        if loader in ("none", "vanilla", ""):
-            return None, None
-        want = None if loader in ("stable", "latest", None) else loader.lstrip("fabric-loader-")
-        cache_file = self._fabric_cache_path(mc_version, want) if (want and self.cfg.cache) else None
+        """Fabric hands a profile over directly, and it is the one loader with a stable list to
+        choose from - so 'stable' means something here, where Forge and NeoForge just take the
+        newest build for the version."""
+        text = str(loader).lower()
+        want = None if text in ("stable", "latest", "auto", "newest", "", "none") \
+            else str(loader).lstrip("fabric-loader-")
+        cache_file = self._loader_cache_path("fabric", mc_version, want) if (want and self.cfg.cache) else None
         if cache_file and os.path.exists(cache_file):
             with open(cache_file) as fh:
                 prof = json.load(fh)
             self.log("fabric loader %s for %s (from the cache; no network needed)"
                      % (prof.get("_loader"), mc_version))
             return prof, prof.get("_loader")
-        meta = None
         try:
             meta = self.curl.json("%s/versions/loader/%s" % (FABRIC_META, mc_version),
                                   headers=self._ua())
         except CurlError:
             if want is None:
-                cached = self._newest_cached_fabric(mc_version)
+                cached = self._newest_cached_profile("fabric", mc_version)
                 if cached:
                     prof, lv = cached
-                    self.log("fabric: meta.fabricmc.net is unreachable, so the cached "
-                             "loader %s is being used for %s" % (lv, mc_version))
+                    self.log("fabric: meta.fabricmc.net is unreachable, so the cached loader %s "
+                             "is being used for %s" % (lv, mc_version))
                     return prof, lv
             raise
         if not meta:
             raise RuntimeError("Fabric has no loader for Minecraft %s" % mc_version)
         if want is None:
             stable = [e for e in meta if e["loader"].get("stable")]
-            pick = (stable[0] if stable else meta[0]) if loader != "latest" else meta[0]
+            pick = meta[0] if text == "latest" else (stable[0] if stable else meta[0])
         else:
             pick = None
-            for e in meta:
-                if e["loader"]["version"] == want:
-                    pick = e
+            for entry in meta:
+                if entry["loader"]["version"] == want:
+                    pick = entry
                     break
             if not pick:
                 raise RuntimeError("Fabric loader %s does not exist for %s (newest: %s)"
-                                   % (want, mc_version, ", ".join(
-                                       e["loader"]["version"] for e in meta[:5])))
-        lv = pick["loader"]["version"]
-        self.log("fabric loader %s for %s%s" % (
-            lv, mc_version, "" if pick["loader"].get("stable") else " (not marked stable)"))
-        prof = self.curl.json("%s/versions/loader/%s/%s/profile/json" % (
-            FABRIC_META, mc_version, lv), headers=self._ua())
-        prof["_loader"] = lv
-        path = self._fabric_cache_path(mc_version, lv)
+                                   % (want, mc_version,
+                                      ", ".join(e["loader"]["version"] for e in meta[:5])))
+        version = pick["loader"]["version"]
+        self.log("fabric loader %s for %s%s" % (version, mc_version,
+                 "" if pick["loader"].get("stable") else " (not marked stable)"))
+        profile = self.curl.json("%s/versions/loader/%s/%s/profile/json"
+                                 % (FABRIC_META, mc_version, version), headers=self._ua())
+        profile["_loader"] = version
+        profile["_kind"] = "fabric"
+        path = self._loader_cache_path("fabric", mc_version, version)
         if path:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as fh:
-                json.dump(prof, fh, indent=1)
-        return prof, lv
+                json.dump(profile, fh, indent=1)
+        return profile, version
 
-    def _fabric_cache_path(self, mc_version, loader_version):
-        if not self.cfg.cache or not loader_version:
-            return None
-        cache = os.path.abspath(os.path.expanduser(self.cfg.cache))
-        return os.path.join(cache, "fabric", "%s-%s.json" % (mc_version, loader_version))
-
-    def _newest_cached_fabric(self, mc_version):
-        """The loader profile from the most recent cached launch of this version,
-        so a machine with no network can still start what it started before."""
+    def _newest_cached_profile(self, kind, mc_version):
+        """The loader profile from the most recent cached launch of this version, so a machine
+        with no network can still start what it started before."""
         if not self.cfg.cache:
             return None
         cache = os.path.abspath(os.path.expanduser(self.cfg.cache))
-        directory = os.path.join(cache, "fabric")
+        directory = os.path.join(cache, kind)
         if not os.path.isdir(directory):
             return None
         best = None
@@ -1222,27 +1234,184 @@ class Session:
         prof = best[1]
         return prof, prof.get("_loader")
 
-    def _fabric_libraries(self, profile):
+    def _loader_profile(self, kind, mc_version, loader):
+        """Resolve a loader for a version, as a version document.
+
+        Fabric hands one over directly; Forge and NeoForge publish the same shape inside their
+        installer jar, so all three arrive here as {mainClass, libraries, arguments} and the
+        rest of the launch path does not care which one it is.
+        """
+        if kind in ("none", "vanilla", "", None):
+            return None, None
+        if kind == "fabric":
+            return self._fabric_profile(mc_version, loader)
+        if kind not in LOADER_KINDS:
+            raise RuntimeError("unknown loader %r (known: %s)" % (kind, ", ".join(LOADER_KINDS)))
+
+        want = None if str(loader).lower() in ("auto", "latest", "newest", "stable", "", "none") \
+            else str(loader)
+        cached = self._loader_cache_path(kind, mc_version, want) if (want and self.cfg.cache) else None
+        if cached and os.path.exists(cached):
+            with open(cached) as fh:
+                prof = json.load(fh)
+            self.log("%s %s for %s (from the cache; no network needed)"
+                     % (kind, prof.get("_loader"), mc_version))
+            return prof, prof.get("_loader")
+
+        try:
+            versions = self._loader_versions(kind, mc_version)
+        except CurlError as exc:
+            if want:
+                raise RuntimeError(
+                    "could not ask %s which builds exist for %s (%s). With --cache and a "
+                    "previous launch of this exact loader build, it can be reused offline."
+                    % (kind, mc_version, exc))
+            raise
+        if not versions:
+            raise RuntimeError("%s has no build for Minecraft %s" % (kind, mc_version))
+        version = want or versions[-1]
+        if want and want not in versions:
+            raise RuntimeError("%s %s does not exist for %s (newest: %s)"
+                               % (kind, want, mc_version, ", ".join(versions[-3:])))
+        profile = self._loader_from_installer(kind, mc_version, version)
+        path = self._loader_cache_path(kind, mc_version, version)
+        if path:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as fh:
+                json.dump(profile, fh, indent=1)
+        return profile, version
+
+    def _loader_versions(self, kind, mc_version):
+        """Newest last, for this Minecraft version. NeoForge numbers itself 21.11.x for 1.21.11
+        and 26.3.x for 26.3, so the mapping is not always the obvious one."""
+        xml = self.curl.get(LOADER_METADATA[kind], dest=None, timeout=120).decode("utf-8", "replace")
+        everything = re.findall(r"<version>([^<]+)</version>", xml)
+        if kind == "forge":
+            # forge is <minecraft>-<forge>
+            return [v.split("-", 1)[1] for v in everything if v.startswith(mc_version + "-")]
+        prefix = (".".join(mc_version.split(".")[1:]) if mc_version.startswith("1.")
+                  else ".".join(mc_version.split(".")[:2])) + "."
+        return [v for v in everything if v.startswith(prefix)]
+
+    def _loader_installer_url(self, kind, mc_version, version):
+        if kind == "forge":
+            return "%snet/minecraftforge/forge/%s-%s/forge-%s-%s-installer.jar" % (
+                LOADER_MAVEN[kind], mc_version, version, mc_version, version)
+        return "%snet/neoforged/neoforge/%s/neoforge-%s-installer.jar" % (
+            LOADER_MAVEN[kind], version, version)
+
+    def _loader_from_installer(self, kind, mc_version, version):
+        url = self._loader_installer_url(kind, mc_version, version)
+        dest = os.path.join(self.versions_dir, "%s-installer-%s.jar" % (kind, version))
+        self.log("%s %s for %s: reading its own version document" % (kind, version, mc_version))
+        self.curl.get(url, dest=dest, timeout=600, headers=self._ua())
+        try:
+            with zipfile.ZipFile(dest) as zf:
+                if "version.json" not in zf.namelist():
+                    raise RuntimeError("%s %s has no version.json to read" % (kind, version))
+                profile = json.loads(zf.read("version.json").decode("utf-8", "replace"))
+        except zipfile.BadZipFile:
+            raise RuntimeError("%s %s did not download as a jar" % (kind, version))
+        profile["_loader"] = version
+        profile["_kind"] = kind
+        libs = profile.get("libraries") or []
+        if not libs:
+            raise RuntimeError("%s %s lists no libraries" % (kind, version))
+        self.log("  %s %s: %s, %d libraries, %s"
+                 % (kind, version, profile.get("mainClass"), len(libs),
+                    "inherits " + str(profile.get("inheritsFrom"))))
+        return profile
+
+    def _loader_cache_path(self, kind, mc_version, version):
+        if not self.cfg.cache or not version:
+            return None
+        cache = os.path.abspath(os.path.expanduser(self.cfg.cache))
+        return os.path.join(cache, kind, "%s-%s.json" % (mc_version, version))
+
+    def _profile_libraries(self, profile):
+        """Every library a loader profile names, into the sandbox.
+
+        Forge and NeoForge carry full download blocks (url + sha1 + path); Fabric carries only
+        Maven coordinates, so the path is built from those. All three end up in the same place.
+        """
         if not profile:
             return []
+        kind = profile.get("_kind") or "fabric"
+        if kind in ("forge", "neoforge"):
+            # Forge and NeoForge do not ship a usable client jar: their own installer runs
+            # installertools over the vanilla jar to produce client-<mc>-<stamp>-srg.jar and
+            # ...-extra.jar, and their bootstrap refuses to start without them. Until the helper
+            # runs that step itself, say so here rather than letting FML report a "corrupted
+            # installation" twenty seconds later.
+            self.log("  %s needs its own client-patching step (installertools), which this helper "
+                     "does not run yet - the game will most likely refuse to start." % kind)
         out = []
         for lib in profile.get("libraries", []):
             if not rules_allow(lib.get("rules"), self._features()):
                 continue
-            name = lib.get("name")
-            repo = (lib.get("url") or "https://maven.fabricmc.net/").rstrip("/")
-            rel, _n = maven_to_path(name)
-            if not rel:
-                continue
-            out.append(os.path.join(self.libs_dir, rel))
-            dest = os.path.join(self.libs_dir, rel)
+            artifact = (lib.get("downloads") or {}).get("artifact") or {}
+            rel = artifact.get("path")
+            url = artifact.get("url")
+            sha1 = artifact.get("sha1")
+            if rel and url:
+                dest = os.path.join(self.libs_dir, rel)
+            else:
+                name = lib.get("name") or ""
+                repo = (lib.get("url") or "").rstrip("/")
+                if not repo:
+                    if name.startswith("net.minecraftforge"):
+                        repo = LOADER_MAVEN["forge"].rstrip("/")
+                    elif name.startswith("net.neoforged"):
+                        repo = LOADER_MAVEN["neoforge"].rstrip("/")
+                    else:
+                        repo = "https://libraries.minecraft.net"
+                rel, _n = maven_to_path(name)
+                if not rel:
+                    continue
+                dest = os.path.join(self.libs_dir, rel)
+                url = "%s/%s" % (repo, rel)
+            out.append(dest)
             if not os.path.exists(dest):
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
-                self.curl.get("%s/%s" % (repo, rel), dest=dest, headers=self._ua())
+                try:
+                    self.curl.get(url, dest=dest, sha1=sha1, headers=self._ua())
+                except CurlError as exc:
+                    self.log("library %s could not be fetched: %s" % (os.path.basename(dest), exc))
         if out:
-            self._phase("fabric", "fabric %s libraries" % profile.get("_loader"),
+            self._phase(kind, "%s %s libraries" % (kind, profile.get("_loader")),
                         len(profile.get("libraries", [])))
-            self._progress("fabric libraries", len(out), len(out))
+            self._progress("%s libraries" % kind, len(out), len(out))
+        return out
+
+    def _features(self):
+        return {
+            "is_demo_user": False,
+            "has_custom_resolution": False,
+            "has_quick_plays_support": False,
+            "is_quick_play_singleplayer": False,
+            "is_quick_play_multiplayer": False,
+            "is_quick_play_realms": False,
+        }
+
+    def _local_mods(self, paths):
+        """Jars already on this machine, copied into the sandbox's mods folder.
+        These are deleted with everything else when the session ends."""
+        out = []
+        mods_dir = os.path.join(self.game_dir, "mods")
+        for p in paths:
+            src = os.path.abspath(os.path.expanduser(p))
+            if not os.path.exists(src):
+                self.log("mod jar %s does not exist - skipped" % src)
+                continue
+            if not src.endswith(".jar"):
+                self.log("mod jar %s is not a .jar - skipped" % src)
+                continue
+            dest = os.path.join(mods_dir, os.path.basename(src))
+            shutil.copy2(src, dest)
+            self.log("mod %s (local file, copied into the sandbox)" % os.path.basename(src))
+            out.append({"name": os.path.basename(src), "slug": "local",
+                        "version": "local file", "file": os.path.basename(src),
+                        "path": dest})
         return out
 
     def _mods(self, slugs, mc_version, loader_ver):
@@ -1278,38 +1447,6 @@ class Session:
             self._progress("mods", i + 1, len(slugs))
         return out
 
-    def _local_mods(self, paths):
-        """Jars already on this machine, copied into the sandbox's mods folder.
-        These are deleted with everything else when the session ends."""
-        out = []
-        mods_dir = os.path.join(self.game_dir, "mods")
-        for p in paths:
-            src = os.path.abspath(os.path.expanduser(p))
-            if not os.path.exists(src):
-                self.log("mod jar %s does not exist - skipped" % src)
-                continue
-            if not src.endswith(".jar"):
-                self.log("mod jar %s is not a .jar - skipped" % src)
-                continue
-            dest = os.path.join(mods_dir, os.path.basename(src))
-            shutil.copy2(src, dest)
-            self.log("mod %s (local file, copied into the sandbox)" % os.path.basename(src))
-            out.append({"name": os.path.basename(src), "slug": "local",
-                        "version": "local file", "file": os.path.basename(src),
-                        "path": dest})
-        return out
-
-    def _features(self):
-        return {
-            "is_demo_user": False,
-            "has_custom_resolution": False,
-            "has_quick_plays_support": False,
-            "is_quick_play_singleplayer": False,
-            "is_quick_play_multiplayer": False,
-            "is_quick_play_realms": False,
-        }
-
-    # ---------------------------------------------------------------- command
     def _build_command(self, vjson, profile, client_jar, libs, mc_version, loader_ver,
                        username, memory, mods):
         features = self._features()
@@ -1370,7 +1507,6 @@ class Session:
         cmd += materialise(game_args, sub, features)
         return cmd, classpath
 
-    # ---------------------------------------------------------------- collect
     def _collect(self):
         self._phase("collect", "collecting what the session wrote", check_cancel=False)
         wanted = ["saves", "logs", "crash-reports", "screenshots", "config",
@@ -1429,73 +1565,6 @@ class Session:
             len(files), total / 1048576.0,
             " - worlds: " + ", ".join(worlds) if worlds else ""))
         return self.result
-
-    def restore(self, blob):
-        """Put a previous session's bundle back into the game dir before launch.
-
-        The page calls this *after* cleanup has deleted the sandbox, so the whole
-        tree has to be rebuilt first - on a warm cache that costs nothing.
-        """
-        self._prepare_root()
-        tmp = os.path.join(self.root, "restore-%s.zip" % secrets.token_hex(4))
-        with open(tmp, "wb") as fh:
-            fh.write(blob)
-        count = 0
-        with zipfile.ZipFile(tmp) as zf:
-            for info in zf.namelist():
-                if info.startswith("/") or ".." in info.split("/"):
-                    continue
-                zf.extract(info, self.game_dir)
-                count += 1
-        os.unlink(tmp)
-        self.log("restored %d files from the browser into the sandbox" % count)
-        return {"restored": count}
-
-    def cleanup(self, why="the page asked for it"):
-        """Delete the sandbox. This is the promise the whole design rests on."""
-        if not os.path.isdir(self.root):
-            receipt = {"removed": 0, "path": self.root, "already": True, "why": why}
-            with self.lock:
-                self.last_cleanup = receipt
-            return receipt
-        if self.cfg.keep:
-            return {"removed": 0, "path": self.root, "kept": True, "why": why,
-                    "note": "--keep was given, nothing deleted"}
-        size = 0
-        files = 0
-        leftovers = []
-        for base, _dirs, names in os.walk(self.root):
-            for n in names:
-                full = os.path.join(base, n)
-                try:
-                    if os.path.islink(full):
-                        continue          # borrowed from the cache: not ours to count
-                    size += os.path.getsize(full)
-                    files += 1
-                except OSError:
-                    pass
-        shutil.rmtree(self.root, ignore_errors=True)
-        with self.lock:
-            self.cleanup_deadline = None
-        # Anything of ours that a crash could have scattered outside the sandbox.
-        for pattern in ("webmc-curl-*.conf", "webmc-*.part"):
-            import glob as _glob
-            for stray in _glob.glob(os.path.join(os.environ.get("TMPDIR", "/tmp"), pattern)):
-                try:
-                    size += os.path.getsize(stray)
-                    os.unlink(stray)
-                    leftovers.append(stray)
-                except OSError:
-                    pass
-        gone = not os.path.exists(self.root)
-        receipt = {"removed": size, "files": files, "path": self.root, "gone": gone,
-                   "why": why, "strays": leftovers, "at": time.time()}
-        with self.lock:
-            self.last_cleanup = receipt
-        self.log("deleted %s (%s files, %.1f MB freed)%s"
-                 % (self.root, files, size / 1048576.0,
-                    "" if gone else " -- SOMETHING IS STILL THERE"))
-        return receipt
 
     # ---------------------------------------------------------------- pushed mods
     @property
@@ -1845,7 +1914,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = self._json_body()
             opts = {
                 "version": body.get("version") or DEFAULT_VERSION,
-                "loader": body.get("loader") or "stable",
+                "loader": body.get("loader") or "auto",
+                "loaderKind": body.get("loaderKind") or "fabric",
                 "mods": body.get("mods") or [],
                 "username": body.get("username") or "Player",
                 "memory": body.get("memory") or DEFAULT_MEMORY,
@@ -2173,10 +2243,13 @@ def uninstall(log=print):
         elif os.path.exists(path):
             os.unlink(path)
             removed.append(path)
-    freed, count = sweep_stale_sandboxes(older_than=0, keep=None, log=lambda *_: None)
+    cleared, freed = sweep_stale_sandboxes(older_than=0, keep=None, log=lambda *_: None)
     log("  removed: %s" % (", ".join(removed) if removed else "nothing (it was not installed)"))
-    if count:
-        log("  and cleared %d leftover sandbox item(s), %.1f MB" % (count, freed / 1048576.0))
+    if cleared:
+        # sweep_stale_sandboxes returns (how many, how many bytes). Getting that order wrong once
+        # printed five million "items" for 5.5 MB of sandboxes, which is a good way to frighten
+        # somebody who is about to read the output of an uninstaller.
+        log("  and cleared %d leftover sandbox(es), %.1f MB" % (cleared, freed / 1048576.0))
     log("  the log is left behind on purpose: %s" % paths["log"])
     return 0
 
@@ -2354,8 +2427,11 @@ def parse_args(argv):
                     help="launch immediately instead of waiting for the page")
     ap.add_argument("--version", default=DEFAULT_VERSION,
                     help="Minecraft version (default %s)" % DEFAULT_VERSION)
-    ap.add_argument("--loader", default="stable",
-                    help="Fabric loader version, 'stable' or 'none'")
+    ap.add_argument("--loader-kind", default="fabric",
+                    help="which loader: fabric (default), forge, neoforge, or none for vanilla")
+    ap.add_argument("--loader", default="auto",
+                    help="loader version, or 'auto'/'stable'/'latest' for the newest suitable "
+                         "build of the chosen kind")
     ap.add_argument("--mods", default="",
                     help="comma-separated Modrinth slugs, e.g. fabric-api,modmenu")
     ap.add_argument("--mod-jar", action="append", default=[], metavar="PATH",
@@ -2524,6 +2600,7 @@ def main(argv=None):
         opts = {
             "version": args.version,
             "loader": args.loader,
+            "loaderKind": args.loader_kind,
             "mods": [m.strip() for m in (args.mods or "").split(",") if m.strip()],
             "localMods": list(args.mod_jar or []),
             "username": args.username,
@@ -2532,7 +2609,7 @@ def main(argv=None):
         }
         print("  launching %s%s with %s" % (
             opts["version"],
-            " + fabric" if opts["loader"] not in ("none", "") else "",
+            " + " + opts["loaderKind"] if opts["loaderKind"] not in ("none", "") else " vanilla",
             ", ".join(opts["mods"]) or "no mods"))
         print("")
         session.start(opts)
