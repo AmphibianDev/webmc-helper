@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WebMC — real Minecraft, nothing left behind</title>
+<!--
+  This page is a remote control and a locker, nothing else.
+
+  The remote control part: a helper the visitor started on 127.0.0.1 does the work,
+  because a page cannot start a program, read a file, or see /tmp.
+
+  The locker part, and the reason this exists at all: everything that would otherwise
+  end up on the computer lives *here*, in this browser. Your mod jars, your world, your
+  settings. The game runs in a throwaway folder under /tmp and that folder is deleted
+  when the session ends - so the computer is borrowed for an hour, not changed.
+
+  Layout rule this page follows: one job per panel, top to bottom - Play, Mods,
+  Settings - and nothing that belongs in Settings sitting in the open.
+-->
+<style>
+  :root{
+    --bg:#161619; --panel:#1e1e22; --panel2:#26262b; --edge:#33333a; --edge2:#43434c;
+    --text:#ececed; --muted:#9d9da5; --dim:#6f6f78; --green:#3c8527; --green2:#4b9e32;
+    --blue:#3d84d8; --red:#c2554d; --amber:#d8a12a; --radius:8px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--text);overflow:hidden;
+       font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       -webkit-font-smoothing:antialiased}
+  a{color:var(--blue)}
+  code{font:12.5px ui-monospace,SFMono-Regular,Menlo,monospace;background:#111114;
+       border:1px solid var(--edge);padding:1px 5px;border-radius:4px}
+  header{display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid #000;
+         background:#1b1b1f}
+  header h1{margin:0;font-size:15px;font-weight:600;letter-spacing:.01em}
+  header h1 small{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.14em;
+                  text-transform:uppercase;margin-left:8px}
+  .grow{flex:1}
+  .pill{display:inline-flex;align-items:center;gap:7px;font-size:12px;padding:4px 11px;
+        border-radius:99px;border:1px solid var(--edge);color:var(--muted);background:var(--panel);
+        text-decoration:none}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--dim);flex:none}
+  .dot.ok{background:var(--green2);box-shadow:0 0 8px var(--green2)}
+  .dot.bad{background:var(--red)}
+  .dot.busy{background:var(--amber)}
+  button{font:inherit;cursor:pointer;border-radius:var(--radius);border:1px solid var(--edge);
+         background:var(--panel2);color:var(--text);padding:8px 13px;font-size:14px}
+  button:hover:not(:disabled){border-color:#585862}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  input,select{width:100%;background:#131316;border:1px solid var(--edge);border-radius:var(--radius);
+               padding:8px 10px;font:inherit;font-size:14px;color:var(--text)}
+  input:focus,select:focus{outline:none;border-color:var(--blue)}
+  label{display:block;font-size:12px;color:var(--muted);margin:0 0 5px}
+  main{display:grid;grid-template-columns:minmax(390px,1fr) 1.15fr;height:calc(100% - 55px);min-height:0}
+  .left{overflow:auto;min-height:0;padding:16px;display:flex;flex-direction:column;gap:14px}
+  .right{display:flex;flex-direction:column;min-height:0;border-left:1px solid #000}
+  .card{background:var(--panel);border:1px solid var(--edge);border-radius:11px;padding:15px 16px}
+  .card h2{margin:0 0 12px;font-size:11px;letter-spacing:.15em;text-transform:uppercase;
+           color:var(--dim);font-weight:600;display:flex;align-items:center;gap:8px}
+  .card h2 .count{color:var(--muted);letter-spacing:0;text-transform:none;font-size:12px}
+  .row{display:flex;gap:9px}
+  .row>*{flex:1}
+  .row .fixed{flex:0 0 auto}
+  button.play{width:100%;padding:14px;font-size:17px;font-weight:600;background:var(--green);
+              border-color:var(--green);color:#fff;margin-top:13px}
+  button.play:hover:not(:disabled){background:var(--green2);border-color:var(--green2)}
+  button.stop{width:100%;padding:14px;font-size:16px;font-weight:600;background:#3a2523;
+              border-color:#6b3a35;color:#ffb3ab;margin-top:13px}
+  .bar{height:7px;background:#101013;border-radius:99px;overflow:hidden;margin-top:12px;
+       border:1px solid var(--edge)}
+  .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--green),var(--green2));
+         transition:width .25s}
+  .bar.indet i{width:35%;animation:slide 1.1s ease-in-out infinite}
+  @keyframes slide{0%{margin-left:-35%}100%{margin-left:100%}}
+  .statline{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);
+            margin-top:9px}
+  .hint{font-size:12px;color:var(--dim);margin-top:9px;line-height:1.5}
+  .warn{border:1px solid #6b5a20;background:#241f11;color:#e8cf8a;padding:10px 12px;
+        border-radius:var(--radius);font-size:12.5px;line-height:1.55}
+  .netblock{border:1px solid #6b3a35;background:#2b1c1a;color:#ffb3ab;padding:10px 12px;
+            border-radius:var(--radius);font-size:12.5px;line-height:1.55}
+  ol.steps{margin:10px 0 0;padding-left:20px;font-size:13px;color:var(--muted);line-height:1.75}
+  /* ---- mods */
+  .drop{border:1.5px dashed var(--edge2);border-radius:var(--radius);padding:15px;text-align:center;
+        color:var(--muted);font-size:13px;transition:.15s;cursor:pointer}
+  .drop:hover,.drop.over{border-color:var(--green2);color:var(--text);background:#1c2318}
+  .mods{list-style:none;margin:12px 0 0;padding:0;font-size:13px}
+  .mods li{display:flex;align-items:center;gap:10px;padding:7px 9px;border:1px solid var(--edge);
+           border-radius:6px;margin-bottom:6px;background:#1a1a1e}
+  .mods li .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mods li .meta{color:var(--dim);font-size:11.5px;flex:none}
+  .mods li button{padding:3px 8px;font-size:12px;background:transparent;color:var(--muted)}
+  .mods li button:hover{color:#ffb3ab;border-color:#6b3a35}
+  .tag{display:inline-block;font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+       color:var(--dim);border:1px solid var(--edge);border-radius:99px;padding:1px 7px;flex:none}
+  .tag.mine{color:#9dd07f;border-color:#33512a}
+  .tag.hub{color:#8fbced;border-color:#2c4a68}
+  .results{list-style:none;margin:10px 0 0;padding:0;max-height:230px;overflow:auto;font-size:13px}
+  .results li{display:flex;gap:10px;align-items:center;padding:7px 8px;border-bottom:1px solid #26262b}
+  .results li .nm{flex:1;min-width:0}
+  .results li .nm b{font-weight:600}
+  .results li .nm div{color:var(--dim);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;
+                      white-space:nowrap}
+  details{background:var(--panel);border:1px solid var(--edge);border-radius:11px;padding:0}
+  details>summary{cursor:pointer;padding:13px 16px;font-size:11px;letter-spacing:.15em;
+                  text-transform:uppercase;color:var(--dim);font-weight:600;list-style:none}
+  details>summary::-webkit-details-marker{display:none}
+  details>summary:after{content:"▸";float:right;color:var(--dim)}
+  details[open]>summary:after{content:"▾"}
+  details .body{padding:0 16px 16px;display:flex;flex-direction:column;gap:12px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .check{display:flex;gap:9px;align-items:flex-start;color:var(--text);font-size:13.5px;
+         margin:0;line-height:1.45}
+  .check input{width:auto;margin-top:3px;flex:none}
+  .console{flex:1;min-height:0;overflow:auto;background:#0c0c0f;padding:12px 15px;
+           font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;
+           word-break:break-word;color:#c9c9d1}
+  .console .e{color:#ff9a90} .console .g{color:#8bd075}
+  .receipt{padding:14px 16px;border-bottom:1px solid #000;background:#182016;display:none;
+           font-size:13px;line-height:1.7}
+  .receipt h3{margin:0 0 8px;font-size:13px;color:#9dd07f}
+  .receipt .line{color:var(--muted)}
+  .receipt b{color:var(--text)}
+  dialog{border:1px solid var(--edge);background:var(--panel);color:var(--text);border-radius:11px;
+         max-width:640px;padding:0}
+  dialog::backdrop{background:rgba(0,0,0,.65)}
+  dialog .inner{padding:22px 24px}
+  dialog h3{margin:0 0 10px;font-size:17px}
+  dialog p,dialog li{font-size:13.5px;color:var(--muted);line-height:1.7}
+  dialog ol{padding-left:20px}
+</style>
+</head>
+<body>
+<header>
+  <h1>WebMC <small>local</small></h1>
+  <span class="pill" id="conn"><i class="dot" id="cd"></i><span id="ct">connecting…</span></span>
+  <span class="grow"></span>
+  <span class="pill" id="where">—</span>
+  <a href="#" id="openlocal2" class="pill" style="display:none"
+     title="The same page, served by the helper itself: no permission prompt, no cross-origin request">helper's own page</a>
+  <button id="help">How this works</button>
+</header>
+
+<main>
+  <section class="left">
+    <!-- ---------------------------------------------------------------- play -->
+    <div class="card" id="playcard">
+      <h2>Play</h2>
+      <div class="row">
+        <div style="flex:2">
+          <label for="version">Minecraft version</label>
+          <select id="version"></select>
+        </div>
+        <div style="flex:2">
+          <label for="loader">Mod loader</label>
+          <select id="loader">
+            <option value="stable" selected>Fabric — newest stable</option>
+            <option value="latest">Fabric — newest</option>
+            <option value="custom">Fabric — a specific version…</option>
+            <option value="none">Vanilla — no Fabric</option>
+          </select>
+        </div>
+      </div>
+      <input id="loadercustom" placeholder="e.g. 0.19.5" style="display:none;margin-top:8px" />
+      <button class="play" id="play" disabled>▶ &nbsp;Play</button>
+      <button class="stop" id="stop" style="display:none">■ &nbsp;Stop the game</button>
+      <div class="bar" id="bar"><i></i></div>
+      <div class="statline"><strong id="phase" style="color:var(--text)">Ready</strong><span id="pct"></span></div>
+      <div class="statline"><span id="instance">nothing has run yet</span><span id="netstat"></span></div>
+      <div id="notready" style="display:none"></div>
+    </div>
+
+    <!-- ---------------------------------------------------------------- mods -->
+    <div class="card" id="modcard">
+      <h2>Mods <span class="count" id="modcount"></span></h2>
+      <div class="drop" id="drop">
+        <b>Drop mod .jar files here</b><br />
+        or click to choose them<br />
+        <span style="font-size:11.5px;color:var(--dim)">They are kept in this browser, not on the computer.</span>
+      </div>
+      <input type="file" id="picker" accept=".jar" multiple style="display:none" />
+      <ul class="mods" id="modlist"></ul>
+      <div class="hint" id="modhint"></div>
+      <div class="row" style="margin-top:14px">
+        <input id="search" placeholder="Search Modrinth — e.g. sodium, lithium, iris" />
+        <button class="fixed" id="dobsearch">Search</button>
+      </div>
+      <ul class="results" id="results"></ul>
+      <div class="hint" id="searchhint">
+        Searched by the helper, so it works even on a network where this browser cannot
+        reach Modrinth. Added mods are fetched fresh for the version you picked.
+      </div>
+    </div>
+
+    <!-- ------------------------------------------------------------ settings -->
+    <details id="settings">
+      <summary>Settings</summary>
+      <div class="body">
+        <div class="grid2">
+          <div>
+            <label for="username">Username (offline)</label>
+            <input id="username" value="Player" maxlength="16" />
+          </div>
+          <div>
+            <label for="memory">Memory for the game</label>
+            <input id="memory" value="2G" />
+          </div>
+          <div>
+            <label for="assets">Sounds and textures</label>
+            <select id="assets">
+              <option value="1" selected>Download (~430 MB, once per sandbox)</option>
+              <option value="0">Skip — silent and textureless, but fast</option>
+            </select>
+          </div>
+          <div>
+            <label for="helper">Helper address</label>
+            <div class="row">
+              <input id="helper" placeholder="http://127.0.0.1:7645" />
+              <button class="fixed" id="connect">Connect</button>
+            </div>
+          </div>
+        </div>
+        <label class="check">
+          <input type="checkbox" id="restore" checked />
+          <span>Put this browser's last session back before playing
+            <span class="hint" style="margin-top:2px">Worlds, options and screenshots live here. Nothing is uploaded.</span></span>
+        </label>
+        <div class="hint" id="connhint"></div>
+        <div id="offline" style="display:none">
+          <div class="warn" id="offlinetext"></div>
+          <div id="gethelper" style="display:none">
+            <div class="hint" style="color:var(--text)"><b>One-time setup, then Play always works.</b></div>
+            <ol class="steps">
+              <li><a id="zipdl" href="helper/webmc-helper.zip" download>Download webmc-helper.zip</a> and unzip it.</li>
+              <li>Double-click <code>webmc-helper/helper/start-helper.command</code>. The window it opens stays open while you play.</li>
+              <li>Come back here and press <b>Connect</b>.</li>
+            </ol>
+            <div class="hint">Needs macOS with Python 3 (already there, or <code>xcode-select --install</code>).
+              Nothing is installed: the game goes into a throwaway folder under <code>/tmp</code> and is deleted afterwards.</div>
+            <div class="hint">Already running the helper? <a href="#" id="openlocal">Open its own page</a> instead — it needs no token handoff.</div>
+            <div class="hint">If macOS refuses to open the file (&ldquo;unidentified developer&rdquo;), right-click it and choose
+              <b>Open</b>, or run <code>xattr -d com.apple.quarantine webmc-helper/helper/start-helper.command</code>.</div>
+          </div>
+        </div>
+      </div>
+    </details>
+  </section>
+
+  <section class="right">
+    <div class="receipt" id="receipt"></div>
+    <div class="console" id="log"><span style="color:#5e5e66">The helper's log appears here,
+including Minecraft's own, so a crash is readable instead of mysterious.</span></div>
+  </section>
+</main>
+
+<dialog id="about">
+  <div class="inner">
+    <h3>Where everything lives</h3>
+    <p><b>On your computer:</b> nothing, once you close this session. The helper downloads the game
+      into one throwaway folder under <code>/tmp</code>, starts the real Java client with Fabric, and
+      then deletes that folder — including the client, the assets, the Java runtime if it fetched one,
+      and the logfiles. There is no service, no folder in your home directory, nothing to uninstall.</p>
+    <p><b>In this browser:</b> your world (saves, screenshots, options, crash reports) and your mod
+      jars. That is deliberate — it is what makes the game disposable and the computer untouched.
+      It is stored with the browser's own storage for this page, is never uploaded anywhere, and
+      you can delete it by clearing site data.</p>
+    <p><b>What the page can and cannot do:</b> it cannot start a program, read a file, or see
+      <code>/tmp</code>. The helper does that part. This page only asks it to, watches the log, and
+      keeps what the session produced.</p>
+    <div class="hint" id="aboutkvs"></div>
+    <div style="margin-top:16px;display:flex;gap:9px;justify-content:flex-end">
+      <button id="copydiag">Copy diagnostics for a report</button>
+      <button id="aboutclose">Close</button>
+    </div>
+    <div class="hint" id="diagstate" style="text-align:right"></div>
+  </div>
+</dialog>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const LS = "webmc.local.";
+const state = { helper:null, token:null, since:0, timer:null, online:false, result:null,
+                slugs:[], slugsMeta:{} };
+
+/* ================================================================= storage
+   Two stores, both inside this browser: the session bundle (world) and the mod jars.
+   OPFS where it exists, IndexedDB where it does not. Neither is a server. */
+const Store = (() => {
+  const DBN = "webmc-local", LOG = "session", MODS = "mods";
+  function idb(){
+    return new Promise((res, rej) => {
+      const r = indexedDB.open(DBN, 2);
+      r.onupgradeneeded = () => {
+        const db = r.result;
+        if (!db.objectStoreNames.contains(LOG)) db.createObjectStore(LOG);
+        if (!db.objectStoreNames.contains(MODS)) db.createObjectStore(MODS);
+      };
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
+  }
+  function idbOp(store, mode, fn){
+    return idb().then(db => new Promise((res, rej) => {
+      const t = db.transaction(store, mode);
+      const req = fn(t.objectStore(store));
+      t.oncomplete = () => res(req && req.result); t.onerror = () => rej(t.error);
+    }));
+  }
+  const opfs = !!(navigator.storage && navigator.storage.getDirectory);
+  async function dir(name, create){
+    const root = await navigator.storage.getDirectory();
+    return root.getDirectoryHandle(name, { create: !!create });
+  }
+  return {
+    kind: opfs ? "OPFS" : "IndexedDB",
+    /* ---- one blob: the session bundle */
+    async put(key, blob){ return this.putIn(LOG, key, blob); },
+    async putIn(store, key, blob){
+      if (opfs){
+        const d = await dir(store, true);
+        const fh = await d.getFileHandle(key, { create:true });
+        const w = await fh.createWritable();
+        await w.write(blob); await w.close(); return;
+      }
+      await idbOp(store, "readwrite", s => s.put(blob, key));
+    },
+    async get(key){ return this.getFrom(LOG, key); },
+    async getFrom(store, key){
+      if (opfs){
+        try { const d = await dir(store, false); const fh = await d.getFileHandle(key);
+              return await fh.getFile(); } catch(e){ return null; }
+      }
+      return (await idbOp(store, "readonly", s => s.get(key))) || null;
+    },
+    async list(store){
+      if (opfs){
+        const out = [];
+        try {
+          const d = await dir(store, false);
+          for await (const [name, handle] of d.entries()){
+            if (handle.kind !== "file") continue;
+            const f = await handle.getFile();
+            out.push({ name, size: f.size });
+          }
+        } catch(e){}
+        return out.sort((a,b) => a.name.localeCompare(b.name));
+      }
+      const keys = (await idbOp(store, "readonly", s => s.getAllKeys())) || [];
+      return keys.map(name => ({ name, size: 0 })).sort((a,b) => a.name.localeCompare(b.name));
+    },
+    async remove(store, key){
+      if (opfs){
+        try { const d = await dir(store, false); await d.removeEntry(key); } catch(e){}
+        return;
+      }
+      await idbOp(store, "readwrite", s => s.delete(key));
+    },
+    async persist(){ try { return navigator.storage && navigator.storage.persist
+                            ? await navigator.storage.persist() : false; } catch(e){ return false; } },
+    async usage(){ try { const e = await navigator.storage.estimate();
+                         return { used:e.usage||0, quota:e.quota||0 }; } catch(e){ return {used:0,quota:0}; } },
+    clearMods(){ return this.list(MODS).then(items => Promise.all(
+                     items.map(i => this.remove(MODS, i.name)))); }
+  };
+})();
+
+const KEY = "last-session.zip";
+const fmt = (b) => {
+  if (!b) return "0 B";
+  const u = ["B","KB","MB","GB"]; let i = 0;
+  while (b >= 1024 && i < u.length-1){ b /= 1024; i++; }
+  return b.toFixed(b < 10 && i > 0 ? 1 : 0) + " " + u[i];
+};
+
+/* ================================================================= connection */
+const hosted = !/^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname);
+
+function remember(){
+  if (!state.helper) return;
+  try {
+    localStorage.setItem(LS+"helper", state.helper);
+    if (state.token) localStorage.setItem(LS+"token", state.token);
+  } catch(e){}
+}
+function adoptFragment(){
+  const f = new URLSearchParams(location.hash.replace(/^#/, ""));
+  if (f.get("helper")) state.helper = f.get("helper").replace(/\/$/, "");
+  if (f.get("t")) state.token = f.get("t");
+  if (f.get("helper")){
+    history.replaceState(null, "", location.pathname + location.search);
+    remember();
+  }
+}
+function connection(){
+  if (window.__WEBMC__ && window.__WEBMC__.helper){
+    state.helper = window.__WEBMC__.helper;
+    state.token = window.__WEBMC__.token;
+    return "helper";
+  }
+  adoptFragment();
+  if (!state.helper){
+    try { state.helper = localStorage.getItem(LS+"helper"); state.token = localStorage.getItem(LS+"token"); } catch(e){}
+  }
+  if (!state.helper && /^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname) && location.port){
+    state.helper = location.origin;          // served by the helper itself
+    return "origin";
+  }
+  return state.helper ? "stored" : "none";
+}
+
+async function api(path, opts){
+  const o = Object.assign({ cache:"no-store" }, opts || {});
+  o.headers = Object.assign({}, o.headers);
+  if (state.token) o.headers["X-WebMC-Token"] = state.token;
+  if (o.body && typeof o.body === "string") o.headers["Content-Type"] = "application/json";
+  if (o.timeout){
+    const ac = new AbortController(); o.signal = ac.signal;
+    setTimeout(() => ac.abort(), o.timeout);
+  }
+  const r = await fetch(state.helper.replace(/\/$/, "") + path, o);
+  if (!r.ok){
+    let detail = r.status + " " + r.statusText;
+    try { const j = await r.json(); if (j.error) detail = j.error; } catch(e){}
+    const err = new Error(detail); err.status = r.status; throw err;
+  }
+  return r;
+}
+const jget = async (p, t) => (await api(p, { timeout: t })).json();
+
+function setConn(kind, text){ $("cd").className = "dot " + kind; $("ct").textContent = text; }
+
+function showOffline(kind){
+  $("offline").style.display = "";
+  const t = $("offlinetext");
+  if (kind === "token"){
+    t.className = "netblock";
+    t.innerHTML = "A helper is listening on that address but rejected this page's token — it was " +
+      "started by an earlier run. Stop it, start it again, and use the link it opens.";
+  } else if (kind === "blocked"){
+    t.className = "warn";
+    t.innerHTML = "Nothing answered on <code>" + (state.helper || "the helper address") + "</code>. " +
+      "Either no helper is running, or this browser <b>blocked local network access</b> for this " +
+      "site. Chrome 142+ and Edge 143+ ask once — allow it (padlock icon → Site settings → Local " +
+      "network access). Where an administrator has blocked it with " +
+      "<code>LocalNetworkAccessBlockedForUrls</code>, nothing on the page can reach a local helper.";
+  } else {
+    t.className = "warn";
+    t.innerHTML = "No helper answered on that address. The page cannot start a program by itself — " +
+      "that is what the helper is for.";
+  }
+  $("gethelper").style.display = hosted ? "" : "none";
+  $("where").textContent = hosted ? "hosted page · helper on this machine" : "—";
+}
+
+async function probe(explicit){
+  if (!state.helper){ setConn("bad", "no helper set"); showOffline("down"); return false; }
+  if (explicit) setConn("busy", "contacting…");
+  try {
+    const hello = await jget("/api/hello", 2000);
+    state.online = true;
+    setConn("ok", "helper " + hello.version);
+    $("offline").style.display = "none";
+    $("where").textContent = hello.platform.os + "/" + hello.platform.arch + " · " + Store.kind;
+    $("connhint").innerHTML = "Connected. Downloads " +
+      (hello.proxy === "direct" ? "go straight out" : "go through <code>" + hello.proxy + "</code>") +
+      " · sandbox <code>" + hello.sandbox + "</code> · it is deleted when the session ends.";
+    $("aboutkvs").innerHTML = "helper " + hello.version + " · " + hello.platform.os + " " +
+      hello.platform.arch + " · proxy " + hello.proxy + " · storage " + Store.kind +
+      " · sandbox " + hello.sandbox;
+    state.hello = hello;
+    remember();
+    $("play").disabled = false;
+    loadVersions();
+    refresh();
+    return true;
+  } catch (e){
+    state.online = false;
+    setConn("bad", (e && e.status === 403) ? "token rejected" : "no helper");
+    $("play").disabled = true;
+    $("connhint").innerHTML = "Last error: <code>" + (e.message || e) + "</code>";
+    showOffline((e && e.status === 403) ? "token" : "blocked");
+    return false;
+  }
+}
+
+/* ================================================================= versions */
+let versionsLoaded = false;
+async function loadVersions(){
+  if (versionsLoaded || !state.online) return;
+  const sel = $("version");
+  try {
+    const j = await jget("/api/versions", 30000);
+    const want = sel.dataset.want || "1.21.11";
+    sel.innerHTML = "";
+    for (const id of j.releases.slice(0, 30)){
+      const o = document.createElement("option"); o.value = id; o.textContent = id;
+      sel.appendChild(o);
+    }
+    sel.value = [...sel.options].some(o => o.value === want) ? want : (sel.options[0] || {}).value;
+    versionsLoaded = true;
+  } catch (e){
+    sel.innerHTML = '<option value="1.21.11">1.21.11 (offline — the list could not be read)</option>';
+  }
+}
+
+/* ================================================================= mods */
+function modName(title, file){ return title ? title : file.replace(/\.jar$/i, ""); }
+
+async function renderMods(){
+  const items = await Store.list("mods");
+  const list = $("modlist");
+  list.innerHTML = "";
+  for (const item of items){
+    const li = document.createElement("li");
+    const nm = document.createElement("span");
+    nm.className = "nm"; nm.textContent = item.name;
+    const tag = document.createElement("span");
+    tag.className = "tag mine"; tag.textContent = "mine";
+    const meta = document.createElement("span");
+    meta.className = "meta"; meta.textContent = item.size ? fmt(item.size) : "";
+    const del = document.createElement("button");
+    del.textContent = "remove";
+    del.onclick = async () => {
+      await Store.remove("mods", item.name);
+      if (state.online) { try { await api("/api/localmods?drop=" + encodeURIComponent(item.name), {method:"POST"}); } catch(e){} }
+      logLine("removed " + item.name + " from this browser");
+      renderMods();
+    };
+    li.append(nm, tag, meta, del);
+    list.appendChild(li);
+  }
+  for (const slug of state.slugs){
+    const li = document.createElement("li");
+    const nm = document.createElement("span");
+    nm.className = "nm"; nm.textContent = state.slugsMeta[slug] || slug;
+    const tag = document.createElement("span");
+    tag.className = "tag hub"; tag.textContent = "modrinth";
+    const del = document.createElement("button");
+    del.textContent = "remove";
+    del.onclick = () => { state.slugs = state.slugs.filter(s => s !== slug); saveSlugs(); renderMods(); };
+    li.append(nm, tag, document.createElement("span"), del);
+    list.appendChild(li);
+  }
+  const total = items.length + state.slugs.length;
+  $("modcount").textContent = total ? total + " added" : "none yet";
+  $("modhint").textContent = total
+    ? "Your jars are stored in this browser and pushed into the sandbox before each launch."
+    : "";
+}
+
+function saveSlugs(){
+  try { localStorage.setItem(LS+"slugs", JSON.stringify(state.slugs)); } catch(e){}
+}
+function loadSlugs(){
+  try {
+    state.slugs = JSON.parse(localStorage.getItem(LS+"slugs") || "[]");
+    state.slugsMeta = JSON.parse(localStorage.getItem(LS+"slugsMeta") || "{}");
+  } catch(e){ state.slugs = []; state.slugsMeta = {}; }
+}
+
+async function addFiles(files){
+  let ok = 0;
+  for (const file of files){
+    if (!/\.jar$/i.test(file.name)){ logLine("skipped " + file.name + " — not a .jar", "e"); continue; }
+    if (file.size > 64*1024*1024){ logLine("skipped " + file.name + " — larger than 64 MB", "e"); continue; }
+    await Store.putIn("mods", file.name, file);
+    ok++;
+    logLine("kept " + file.name + " (" + fmt(file.size) + ") in this browser");
+    if (state.online){
+      try {
+        const r = await (await api("/api/localmods", { method:"POST",
+          headers:{ "X-WebMC-Mod-Name": file.name }, body: file, timeout: 60000 })).json();
+        logLine("helper accepted " + r.name + (r.title ? " (" + r.title + " " + (r.version||"") + ")" : ""), "g");
+      } catch (e){
+        logLine("helper refused " + file.name + ": " + e.message, "e");
+        await Store.remove("mods", file.name);
+        ok--;
+      }
+    }
+  }
+  await Store.persist();
+  renderMods();
+  return ok;
+}
+
+async function pushMods(){
+  const items = await Store.list("mods");
+  let pushed = 0;
+  for (const item of items){
+    const blob = await Store.getFrom("mods", item.name);
+    if (!blob) continue;
+    try {
+      await api("/api/localmods", { method:"POST", headers:{ "X-WebMC-Mod-Name": item.name },
+                                    body: blob, timeout: 60000 });
+      pushed++;
+    } catch (e){
+      logLine("could not hand " + item.name + " to the helper: " + e.message, "e");
+    }
+  }
+  if (pushed) logLine("handed " + pushed + " of your mod jar(s) to the helper for this session", "g");
+  return pushed;
+}
+
+async function searchMods(){
+  const q = $("search").value.trim();
+  if (!q){
+    $("searchhint").textContent = "Type something to search for.";
+    $("searchhint").className = "warn";
+    return;
+  }
+  $("results").innerHTML = "";
+  $("searchhint").className = "hint";
+  $("searchhint").textContent = "searching…";
+  const mc = $("version").value || "1.21.11";
+  try {
+    const j = await jget("/api/search?q=" + encodeURIComponent(q) + "&mc=" + encodeURIComponent(mc), 45000);
+    const list = $("results");
+    if (!j.results.length){ $("searchhint").textContent = "nothing matched."; return; }
+    $("searchhint").textContent = j.results.length + " results from Modrinth (Fabric, " + mc + ")";
+    for (const r of j.results){
+      const li = document.createElement("li");
+      const nm = document.createElement("div");
+      nm.className = "nm";
+      const b = document.createElement("b"); b.textContent = r.title;
+      const d = document.createElement("div"); d.textContent = r.description;
+      nm.append(b, d);
+      const add = document.createElement("button");
+      add.textContent = state.slugs.includes(r.slug) ? "added" : "add";
+      add.disabled = state.slugs.includes(r.slug);
+      add.onclick = () => {
+        state.slugs.push(r.slug);
+        state.slugsMeta[r.slug] = r.title;
+        saveSlugs(); renderMods();
+        add.textContent = "added"; add.disabled = true;
+        logLine("will fetch " + r.title + " from Modrinth when you play");
+      };
+      li.append(nm, add);
+      list.appendChild(li);
+    }
+  } catch (e){
+    $("searchhint").className = "warn";
+    $("searchhint").textContent = "search failed: " + e.message;
+  }
+}
+
+/* ================================================================= status, log */
+function showStop(on){
+  $("stop").style.display = on ? "" : "none";
+  $("play").style.display = on ? "none" : "";
+}
+
+async function refresh(){
+  if (!state.online) return;
+  let st;
+  try { st = await jget("/api/status", 8000); } catch(e){ return; }
+  const running = st.state === "running";
+  showStop(running);
+  $("play").disabled = !state.online || running;
+  $("phase").textContent = st.phaseLabel || st.phase || st.state;
+  const p = st.progress || {};
+  const bar = $("bar");
+  if (p.percent === null || p.percent === undefined){
+    bar.className = running ? "bar indet" : "bar";
+    $("pct").textContent = p.total ? (p.done + " / " + p.total) : "";
+  } else {
+    bar.className = "bar"; bar.firstChild.style.width = p.percent + "%";
+    $("pct").textContent = p.percent + "%  (" + p.done + " / " + p.total + ")";
+  }
+  const inst = st.instance || {};
+  $("instance").textContent = inst.version
+    ? (inst.version + " · " + (inst.loader || "vanilla") +
+       (inst.mods && inst.mods.length ? " · " + inst.mods.length + " mod(s)" : " · no mods") +
+       (inst.username ? " · " + inst.username : ""))
+    : "nothing has run yet";
+  $("netstat").textContent = st.downloadedBytes ? "downloaded " + fmt(st.downloadedBytes) : "";
+  if (st.lastCleanup && !state.result) showReceipt(null, st.lastCleanup);
+  if (st.lastCleanup && state.result && !$("receipt")._rich) showReceipt(state.result, st.lastCleanup);
+  if (st.error && !/^(Ready|idle)$/i.test($("phase").textContent)) logLine(st.error, "e");
+  if (["exited","failed","cancelled"].includes(st.state) && st.result && !state.result){
+    await onSessionEnd(st);
+  }
+  pollLog();
+}
+
+async function pollLog(){
+  if (!state.online) return;
+  try {
+    const j = await jget("/api/log?since=" + state.since, 8000);
+    for (const line of j.lines) logLine(line);
+    state.since = j.next;
+  } catch(e){}
+}
+
+function logLine(text, cls){
+  const el = $("log");
+  const div = document.createElement("div");
+  if (cls) div.className = cls;
+  else if (/\bERROR\b|Exception|FAILED|crash/i.test(text)) div.className = "e";
+  else if (/fabric|Loading \d+ mods|WEBMC-DEMO|is running|accepted|restored|deleted|kept /i.test(text))
+    div.className = "g";
+  div.textContent = text;
+  el.appendChild(div);
+  while (el.childNodes.length > 900) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
+}
+
+/* ================================================================= the loop */
+async function launch(){
+  const loader = $("loader").value === "custom"
+    ? ($("loadercustom").value.trim() || "stable") : $("loader").value;
+  state.result = null;
+  const box = $("receipt");
+  box._rich = false;
+  box.style.display = "none";
+  $("log").innerHTML = "";
+  state.since = 0;
+  showStop(true);
+  $("play").disabled = true;
+  $("phase").textContent = "Preparing";
+  logLine("asking the helper to start " + ($("version").value || "1.21.11") +
+          (loader === "none" ? " (vanilla)" : " with Fabric " + loader));
+  try {
+    await pushMods();
+    if ($("restore").checked){
+      const blob = await Store.get(KEY);
+      if (blob && blob.size){
+        logLine("putting this browser's last session back (" + fmt(blob.size) + ")");
+        await api("/api/restore", { method:"POST", body: blob, timeout: 120000 });
+      }
+    }
+    await api("/api/launch", { method:"POST", body: JSON.stringify({
+      version: $("version").value || "1.21.11",
+      loader: loader,
+      mods: state.slugs,
+      username: $("username").value.trim() || "Player",
+      memory: $("memory").value.trim() || "2G",
+      assets: $("assets").value === "1"
+    })});
+  } catch (e){
+    logLine("could not start: " + e.message, "e");
+    $("phase").textContent = "Could not start";
+    showStop(false);
+    $("play").disabled = false;
+    return;
+  }
+  startPolling();
+}
+
+function startPolling(){ stopPolling(); state.timer = setInterval(refresh, 900); refresh(); }
+function stopPolling(){ if (state.timer) clearInterval(state.timer); state.timer = null; }
+
+async function onSessionEnd(st){
+  stopPolling();
+  await pollLog();
+  showStop(false);
+  const res = st.result;
+  if (!res){ $("phase").textContent = st.state === "failed" ? "Failed" : "Finished"; return; }
+  state.result = res;
+  if (res.available === false){
+    logLine("this session's files are already gone from /tmp — another tab saved them", "g");
+    $("phase").textContent = "Session already saved elsewhere";
+    return;
+  }
+  $("phase").textContent = "Saving the session into this browser";
+  await saveToBrowser(res);
+}
+
+async function saveToBrowser(res){
+  let cleanup = null;
+  try {
+    const blob = await (await api("/api/bundle.zip", { timeout: 180000 })).blob();
+    await Store.put(KEY, blob);
+    await Store.persist();
+    logLine("stored " + fmt(blob.size) + " in " + Store.kind, "g");
+  } catch (e){
+    if (e && e.status === 404) logLine("the sandbox was already cleaned up; nothing to store", "g");
+    else logLine("could not store the session: " + e.message, "e");
+  }
+  try {
+    cleanup = await (await api("/api/cleanup", { method:"POST", timeout: 60000 })).json();
+    logLine("helper deleted " + cleanup.path +
+            (cleanup.removed ? " — " + fmt(cleanup.removed) + " freed" : "") +
+            (cleanup.gone ? ", and confirmed it is gone" : " — SOMETHING REMAINS"), "g");
+    $("phase").textContent = "Finished — /tmp cleaned";
+  } catch (e){
+    logLine("could not tell the helper to clean up: " + e.message +
+            " (it will do it by itself when the deadline passes)", "e");
+  }
+  showReceipt(res, cleanup);
+  refresh();
+}
+
+function showReceipt(res, cleanup){
+  if (!res && !cleanup) return;
+  const box = $("receipt");
+  // Once the full receipt for this session is up, the polling refresh must not replace
+  // it with the bare cleanup line - which is exactly what it used to do.
+  if (res) box._rich = true;
+  else if (box._rich) return;
+  const u = Store.usage();
+  box.style.display = "";
+  box.innerHTML = "";
+  const h = document.createElement("h3");
+  h.textContent = "Session finished — nothing left on this computer";
+  box.appendChild(h);
+  const lines = [];
+  if (res){
+    lines.push((res.worlds && res.worlds.length)
+      ? "<b>" + res.worlds.length + " world(s)</b> saved to this browser: " + res.worlds.join(", ")
+      : "No world was created in this session.");
+    lines.push("<b>" + res.files + " files</b> (" + fmt(res.bytes) + ") kept in this browser, not on disk.");
+    if (res.hasCrash) lines.push("A crash report was included — it is in the zip below.");
+  }
+  if (cleanup && cleanup.gone)
+    lines.push("The helper deleted <b>" + cleanup.path + "</b>" + (cleanup.removed ? " (" + fmt(cleanup.removed) + " freed)" : "") + ".");
+  if (cleanup && cleanup.why) lines.push("Reason: " + cleanup.why + ".");
+  const div = document.createElement("div");
+  div.className = "line";
+  div.innerHTML = lines.map(l => "✔ " + l).join("<br>");
+  box.appendChild(div);
+  const acts = document.createElement("div");
+  acts.style.marginTop = "10px";
+  acts.innerHTML = '<a href="#" id="dlzip">save the session zip to Downloads</a> &nbsp;·&nbsp; ' +
+                   '<a href="#" id="delsession">forget everything this page stored</a> &nbsp;·&nbsp; ' +
+                   '<span class="hint" style="display:inline">nothing was uploaded anywhere</span>';
+  box.appendChild(acts);
+  $("dlzip").onclick = async (e) => {
+    e.preventDefault();
+    const blob = await Store.get(KEY);
+    if (!blob) return;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = "webmc-session.zip"; a.click();
+  };
+  $("delsession").onclick = async (e) => {
+    e.preventDefault();
+    await Store.remove("session", KEY);
+    for (const m of await Store.list("mods")) await Store.remove("mods", m.name);
+    state.slugs = []; saveSlugs();
+    $("receipt").style.display = "none";
+    renderMods();
+    logLine("cleared everything this page had stored in the browser", "g");
+  };
+  u.then(est => {
+    if (est.used) logLine("this browser now holds " + fmt(est.used) + " for this page", "g");
+  });
+}
+
+/* ================================================================= wiring */
+$("connect").onclick = () => { state.helper = $("helper").value.trim().replace(/\/$/, ""); probe(true); };
+$("play").onclick = launch;
+$("stop").onclick = async () => {
+  try { await api("/api/stop", { method:"POST" }); logLine("stop requested"); }
+  catch (e){ logLine("stop failed: " + e.message, "e"); }
+  startPolling();
+};
+$("help").onclick = () => $("about").showModal();
+$("aboutclose").onclick = () => $("about").close();
+
+async function diagnostics(){
+  const h = state.hello || {};
+  const platform = h.platform || {};
+  const est = await Store.usage();
+  const mods = await Store.list("mods");
+  const bundle = await Store.get(KEY);
+  const log = $("log").textContent.trim().split("\n");
+  const lines = [
+    "webmc-helper diagnostics",
+    "helper     : " + (h.version || "not connected") +
+      (platform.os ? "  (" + platform.os + " " + platform.version + ", " + platform.arch + ")" : ""),
+    "page       : " + (hosted ? "hosted copy at " + location.host : "served by the helper") ,
+    "helper url : " + (state.helper || "(none)") + "  vault: " + (state.token ? "stored" : "none"),
+    "downloads  : " + (h.proxy || "?") + "  ",
+    "sandbox    : " + (h.sandbox || "?"),
+    "browser sto: " + Store.kind + ", " + fmt(est.used) + " of " + fmt(est.quota),
+    "world zip  : " + (bundle ? fmt(bundle.size) : "none stored"),
+    "my mods    : " + (mods.length ? mods.map(m => m.name + " (" + fmt(m.size) + ")").join(", ") : "none"),
+    "modrinth   : " + (state.slugs.length ? state.slugs.join(", ") : "none"),
+    "version    : " + ($("version").value || "?") + "  loader: " + $("loader").value +
+      "  memory: " + $("memory").value + "  assets: " + ($("assets").value === "1" ? "yes" : "no"),
+    "phase      : " + $("phase").textContent + "  | " + $("instance").textContent,
+    "launcher   : " + location.href,
+    "",
+    "last session reported:",
+    state.result ? JSON.stringify(state.result) : "  (nothing this page load)",
+    "",
+    "--- the helper's log, last 200 lines ---",
+    ...log.slice(-200)
+  ];
+  const text = lines.join("\n");
+  try {
+    await navigator.clipboard.writeText(text);
+    $("diagstate").textContent = "copied to the clipboard — paste it into the issue";
+    return text;
+  } catch (e){
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.cssText = "position:fixed;top:10px;left:10px;width:90%;height:50%;z-index:99";
+    document.body.appendChild(ta);
+    ta.select();
+    $("diagstate").textContent = "select all and copy (the clipboard API was refused)";
+    return text;
+  }
+}
+$("copydiag").onclick = diagnostics;
+$("loader").onchange = () => {
+  $("loadercustom").style.display = $("loader").value === "custom" ? "" : "none";
+};
+$("drop").onclick = () => $("picker").click();
+$("picker").onchange = () => { addFiles([...$("picker").files]); $("picker").value = ""; };
+for (const ev of ["dragenter","dragover"]){
+  $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.add("over"); });
+}
+for (const ev of ["dragleave","drop"]){
+  $("drop").addEventListener(ev, () => $("drop").classList.remove("over"));
+}
+$("drop").addEventListener("drop", (e) => {
+  e.preventDefault();
+  addFiles([...(e.dataTransfer ? e.dataTransfer.files : [])]);
+});
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("drop", (e) => e.preventDefault());
+$("dobsearch").onclick = searchMods;
+$("search").addEventListener("keydown", (e) => { if (e.key === "Enter") searchMods(); });
+$("openlocal").onclick = (e) => { e.preventDefault(); window.open("http://127.0.0.1:7645/", "_blank", "noopener"); };
+$("openlocal2").onclick = (e) => { e.preventDefault(); window.open("http://127.0.0.1:7645/", "_blank", "noopener"); };
+
+(function init(){
+  loadSlugs();
+  renderMods();
+  $("helper").value = state.helper || "http://127.0.0.1:7645";
+  if (hosted){
+    $("zipdl").href = "helper/webmc-helper.zip";
+    $("openlocal2").style.display = "";
+  }
+  const where = connection();
+  if (state.helper){
+    setConn("busy", "contacting…");
+    probe(false);
+  } else {
+    setConn("bad", "not connected");
+    showOffline("down");
+    $("connhint").innerHTML = "Start the helper, then press Connect.";
+    $("settings").open = true;
+  }
+  if (where === "none"){
+    window.addEventListener("load", () => {
+      if (connection() !== "none"){ $("helper").value = state.helper; probe(false); }
+    }, { once:true });
+  }
+  Store.usage().then(est => {
+    if (est.used) logLine("this browser already holds " + fmt(est.used) + " for this page");
+  });
+})();
+</script>
+</body>
+</html>

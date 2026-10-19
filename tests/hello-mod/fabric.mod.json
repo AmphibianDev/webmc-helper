@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "webmc-demo",
+  "version": "1.0.0",
+  "name": "WebMC demo mod",
+  "description": "Compiled on this machine, loaded by Fabric at play time, deleted with the sandbox.",
+  "environment": "client",
+  "entrypoints": { "client": ["webmc.demo.HelloMod"] },
+  "depends": { "fabricloader": ">=0.15.0" }
+}

@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+tests/hello-mod/out/
+tests/hello-mod/hello-mod.jar
+.DS_Store

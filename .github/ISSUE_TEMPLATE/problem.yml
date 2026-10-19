@@ -1,0 +1,56 @@
+name: Something went wrong
+description: Report a launch that failed, a mod that did not load, or leftovers in /tmp
+title: "[problem] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying it. Two things make a report solvable in one round trip:
+        the **diagnostics** from the page (Help → How this works → *copy diagnostics*)
+        and the **helper's own log**. Everything else is a bonus.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you clicked, what you expected, what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: "From the page: How this works → copy diagnostics. Paste it here."
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: The helper's log
+      description: "The dark panel on the right of the page. If the game crashed, include the last ~40 lines, or the crash report from the session zip."
+      render: text
+    validations:
+      required: false
+  - type: input
+    id: machine
+    attributes:
+      label: Mac and version
+      placeholder: "e.g. M4 MacBook Air, macOS 27.0.1"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Minecraft and Fabric
+      placeholder: "e.g. 1.21.11 + Fabric 0.19.5, with sodium and my own jar"
+    validations:
+      required: true
+  - type: checkboxes
+    id: leftovers
+    attributes:
+      label: Did it leave anything behind?
+      description: "Run `python3 webmc_helper.py --audit` and say what it printed."
+      options:
+        - label: "`--audit` says nothing is left on the machine"
+        - label: "`--audit` found a leftover (paste it into Diagnostics)"
