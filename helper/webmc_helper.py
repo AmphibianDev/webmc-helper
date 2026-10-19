@@ -2032,6 +2032,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # ---- the helper's own copy of the page
     def _page(self):
         page = self.server.page_path
+        if (not page or not os.path.exists(page)) and _EMBEDDED_PAGE:
+            # Self-healing: the sandbox (and the page written into it) is deleted when a session
+            # ends, and the page has to come back for the next visit.
+            page = materialise_embedded_page(self.server.session.root) or page
+            self.server.page_path = page
         if not page or not os.path.exists(page):
             return self._json(200, {
                 "name": NAME, "version": VERSION,
@@ -2096,24 +2101,32 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 def default_page(root):
     """Where the launcher page is, when it is not given.
 
-    One file has to be able to serve its own page, so an embedded copy is written into the
-    sandbox; otherwise the page sits next to the helper in the repository layout.
+    One file has to be able to serve its own page, so an embedded copy is written out next to the
+    sandbox's files. That copy has to be re-creatable, not written once: the sandbox is deleted
+    when a session ends, and the page used to be deleted with it, so after the first session the
+    helper answered "/" with "page not found next to the helper".
     """
     if _EMBEDDED_PAGE:
-        try:
-            import base64
-            os.makedirs(root, exist_ok=True)
-            path = os.path.join(root, "page.html")
-            with open(path, "wb") as fh:
-                fh.write(base64.b64decode(_EMBEDDED_PAGE))
-            return path
-        except Exception:
-            return None
+        return materialise_embedded_page(root)
     here = globals().get("__file__")
     if not here:
         return None
     guess = os.path.join(os.path.dirname(os.path.abspath(here)), os.pardir, "page", "index.html")
     return os.path.abspath(guess) if os.path.exists(guess) else None
+
+
+def materialise_embedded_page(root):
+    import base64
+    path = os.path.join(root, "page.html")
+    try:
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            return path
+        os.makedirs(root, exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(base64.b64decode(_EMBEDDED_PAGE))
+        return path
+    except Exception:
+        return None
 
 
 def default_root():
