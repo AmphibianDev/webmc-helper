@@ -479,6 +479,13 @@ function showOffline(kind){
   }
   $("gethelper").style.display = hosted ? "" : "none";
   $("where").textContent = hosted ? "hosted page · helper on this machine" : "—";
+  if (hosted && $("notready")){
+    // A hosted copy can still get the visitor playing: it hands the tab over.
+    $("notready").style.display = "";
+    $("notready").innerHTML = '<div class="hint">Pressing <b>Play</b> will hand this tab to the ' +
+      'helper\u2019s own page at <code>http://127.0.0.1:7645/</code>, which starts the game ' +
+      'without asking for any permission. Nothing is installed by doing that.</div>';
+  }
 }
 
 async function probe(explicit){
@@ -505,7 +512,7 @@ async function probe(explicit){
   } catch (e){
     state.online = false;
     setConn("bad", (e && e.status === 403) ? "token rejected" : "no helper");
-    $("play").disabled = true;
+    $("play").disabled = false;      // Play hands the tab over instead of being unavailable
     $("connhint").innerHTML = "Last error: <code>" + (e.message || e) + "</code>";
     showOffline((e && e.status === 403) ? "token" : "blocked");
     return false;
@@ -754,6 +761,28 @@ $("copyline").onclick = async () => {
   catch (e){ $("copyok").textContent = "select it and copy by hand"; }
 };
 
+/* ================================================================= handing over
+   Measured on this platform: a public page may not fetch 127.0.0.1 (Chromium refuses, or asks for
+   Local Network Access) and it may not embed it in a frame either - the frame tree came back with no
+   child frame at all. But a top-level navigation to it is allowed, with no prompt and no error. So a
+   hosted copy of this page does not fail when it cannot reach the helper: it hands the tab to the
+   helper's own page, with the visitor's choices in the fragment, and that page starts the game. */
+function handOver(){
+  const loader = $("loader").value === "custom"
+    ? ($("loadercustom").value.trim() || "stable") : $("loader").value;
+  const params = new URLSearchParams({
+    play: "1",
+    v: $("version").value || "1.21.11",
+    l: loader,
+    m: $("mods").value || "",
+    u: $("username").value.trim() || "Player",
+    mem: $("memory").value.trim() || "2G",
+  });
+  logLine("this page is not allowed to reach 127.0.0.1 directly, so it is handing the tab to the " +
+          "helper's own page - the game starts there", "g");
+  location.href = "http://127.0.0.1:7645/#" + params.toString();
+}
+
 /* ================================================================= status, log */
 function showStop(on){
   $("stop").style.display = on ? "" : "none";
@@ -766,7 +795,7 @@ async function refresh(){
   try { st = await jget("/api/status", 8000); } catch(e){ return; }
   const running = st.state === "running";
   showStop(running);
-  $("play").disabled = !state.online || running;
+  $("play").disabled = running;
   $("phase").textContent = st.phaseLabel || st.phase || st.state;
   const p = st.progress || {};
   const bar = $("bar");
@@ -821,6 +850,10 @@ function logLine(text, cls){
 
 /* ================================================================= the loop */
 async function launch(){
+  if (!state.online){
+    handOver();
+    return;
+  }
   const loader = $("loader").value === "custom"
     ? ($("loadercustom").value.trim() || "stable") : $("loader").value;
   state.result = null;
