@@ -183,6 +183,10 @@ class CurlError(RuntimeError):
     pass
 
 
+class Cancelled(Exception):
+    """Raised when the visitor stops a launch that has not finished starting."""
+
+
 class Curl:
     """Thin curl wrapper: SOCKS-aware, parallel-capable, sha1-verifying."""
 
@@ -196,6 +200,49 @@ class Curl:
         # points this at its own sandbox so that nothing of ours can survive outside
         # it, even if the helper dies mid-download.
         self.workdir = None
+        # Running curl processes, so a cancel can kill a download in flight instead of making
+        # somebody wait for 430 MB of assets when they picked the wrong version.
+        self._live = set()
+        self._abort = False
+
+    def abort(self):
+        """Stop every download now. Idempotent, safe to call from another thread."""
+        with self._lock:
+            self._abort = True
+            live = list(self._live)
+        for proc in live:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        return len(live)
+
+    def clear_abort(self):
+        with self._lock:
+            self._abort = False
+
+    def aborted(self):
+        with self._lock:
+            return self._abort
+
+    def _run_curl(self, args, timeout=None):
+        """Every curl goes through here, tracked, so abort() can reach it."""
+        if self.aborted():
+            raise CurlError("cancelled")
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        with self._lock:
+            self._live.add(proc)
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+        finally:
+            with self._lock:
+                self._live.discard(proc)
+        if self.aborted():
+            raise CurlError("cancelled")
+        return proc.returncode, out or b"", err or b""
 
     def workdir_path(self):
         d = self.workdir if (self.workdir and os.path.isdir(self.workdir)) \
@@ -223,12 +270,12 @@ class Curl:
             args += ["-o", tmp, url]
         else:
             args += [url]
-        proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if proc.returncode != 0:
+        code, out, err = self._run_curl(args, timeout=timeout + 30)
+        if code != 0:
             if dest and os.path.exists(dest + ".part"):
                 os.unlink(dest + ".part")
             raise CurlError("curl %s -> %s: %s" % (
-                url, proc.returncode, proc.stderr.decode("utf-8", "replace").strip()[:300]))
+                url, code, err.decode("utf-8", "replace").strip()[:300]))
         if dest:
             if sha1 and sha1_of(tmp) != sha1:
                 os.unlink(tmp)
@@ -238,8 +285,8 @@ class Curl:
                 self.bytes_in += os.path.getsize(dest)
             return dest
         with self._lock:
-            self.bytes_in += len(proc.stdout)
-        return proc.stdout
+            self.bytes_in += len(out)
+        return out
 
     def json(self, url, timeout=120, headers=()):
         raw = self.get(url, dest=None, timeout=timeout, headers=headers)
@@ -269,9 +316,11 @@ class Curl:
         else:
             failed = self._batch_threads(todo, progress, len(items),
                                          len(items) - len(todo), workers)
+            failed = self._batch_parallel(todo, progress, len(items),
+                                          len(items) - len(todo), workers)
         # verify + retry, individually, so a bad file can never survive
         for attempt in range(2):
-            if not failed:
+            if not failed or self.aborted():
                 break
             retry, failed = failed, []
             for item in retry:
@@ -319,8 +368,9 @@ class Curl:
                                    "-K", cfg]
             if self.proxy:
                 args += ["--proxy", self.proxy]
-            proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            err = proc.stderr.decode("utf-8", "replace")
+            proc = self._run_curl(args, timeout=1800)
+            err = proc[2].decode("utf-8", "replace")
+            code = proc[0]
             # which ones actually arrived intact?
             done = 0
             for item in todo:
@@ -328,6 +378,9 @@ class Curl:
                     done += 1
                 else:
                     failed.append(item)
+            if self.aborted():
+                # A cancel is not a failure to report: nothing should be retried.
+                raise CurlError("cancelled")
             if progress:
                 progress(already + done, total)
             if failed and not err.strip():
@@ -498,6 +551,7 @@ class Session:
         self.thread = None
         self.cleanup_deadline = None
         self.last_cleanup = None
+        self.cancel_requested = False
         self.pending_mods = []      # jars the page pushed in, waiting for a launch
         self.java = None
         self.java_major = 0
@@ -620,10 +674,38 @@ class Session:
             self.done = 0
             self.total = 0
             self.cleanup_deadline = None
+            self.cancel_requested = False
             self.started_at = time.time()
             self.ended_at = None
+        self.curl.clear_abort()
         self.thread = threading.Thread(target=self._run, args=(opts,), daemon=True)
         self.thread.start()
+
+    def _check_cancelled(self):
+        if self.cancel_requested or self.curl.aborted():
+            raise Cancelled("stopped on request")
+
+    def cancel(self, why="the page asked for it"):
+        """Stop a launch that has not started yet: the downloads, then the game.
+
+        Stop used to mean "kill the game process", which did nothing while 430 MB of assets
+        were still downloading - so picking the wrong version meant waiting for it. This
+        interrupts the downloads, ends the job at its next step, and still collects what the
+        attempt produced so the page can keep it.
+        """
+        with self.lock:
+            self.cancel_requested = True
+            was_running = self.state == "running"
+        killed = self.curl.abort()
+        game = self.stop()
+        self.log("stop requested: cancelling everything%s%s"
+                 % (" (%d download(s) killed)" % killed if killed else "",
+                    " (game killed)" if game else ""))
+        with self.lock:
+            if was_running and not game:
+                self.state = "cancelling"
+        return {"cancelled": True, "downloads": killed, "game": game,
+                "why": why, "state": self.state}
 
     def stop(self):
         with self.lock:
@@ -653,7 +735,12 @@ class Session:
             self.done = done
             self.total = total
 
-    def _phase(self, name, label=None, total=0):
+    def _phase(self, name, label=None, total=0, check_cancel=True):
+        # Every step of a launch goes through here, so a stop lands between steps rather
+        # than at the end of them. Collecting is the exception: once a stop has been
+        # honoured, what the attempt produced still has to be saved, not cancelled again.
+        if check_cancel:
+            self._check_cancelled()
         with self.lock:
             self.phase = name
             self.phase_label = label or name
@@ -769,15 +856,43 @@ class Session:
                 self.phase = "done"
                 self.phase_label = "session finished"
                 self.ended_at = time.time()
-        except Exception as exc:  # noqa: BLE001 - surfaced to the page
-            self.error = "%s: %s" % (type(exc).__name__, exc)
-            self.log("FAILED - %s" % self.error)
+        except Cancelled as exc:
+            self.log("stopped: %s" % exc)
+            try:
+                # Even a stopped attempt keeps its log: that is the difference between
+                # "it didn't work" and "it didn't work and nobody knows why".
+                self._collect()
+            except Exception as collect_problem:  # noqa: BLE001
+                self.log("nothing could be collected: %s" % collect_problem)
             with self.lock:
-                self.state = "failed"
-                self.phase = "failed"
-                self.phase_label = "failed"
+                self.state = "cancelled"
+                self.phase = "cancelled"
+                self.phase_label = "Stopped"
                 self.ended_at = time.time()
+        except Exception as exc:  # noqa: BLE001 - surfaced to the page
+            if isinstance(exc, CurlError) and str(exc) == "cancelled":
+                with self.lock:
+                    self.state = "cancelled"
+                    self.phase = "cancelled"
+                    self.phase_label = "Stopped"
+                    self.ended_at = time.time()
+                self.log("stopped on request")
+                try:
+                    self._collect()
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                self.error = "%s: %s" % (type(exc).__name__, exc)
+                self.log("FAILED - %s" % self.error)
+                with self.lock:
+                    self.state = "failed"
+                    self.phase = "failed"
+                    self.phase_label = "failed"
+                    self.ended_at = time.time()
+
         finally:
+            # Whatever happened, the sandbox now has a deadline: if the page never collects the
+            # result, the watchdog deletes it.
             self.refresh_cleanup_deadline()
 
     def _pump(self, stream, logfile):
@@ -1250,7 +1365,7 @@ class Session:
 
     # ---------------------------------------------------------------- collect
     def _collect(self):
-        self._phase("collect", "collecting what the session wrote")
+        self._phase("collect", "collecting what the session wrote", check_cancel=False)
         wanted = ["saves", "logs", "crash-reports", "screenshots", "config",
                   "options.txt", "servers.dat", "usercache.json", "realms_persistence.json"]
         files = []
@@ -1277,6 +1392,16 @@ class Session:
             if os.path.exists(console):
                 zf.write(console, "console.log")
                 files.append({"path": "console.log", "size": os.path.getsize(console)})
+            # The helper's own account of the attempt, always. A launch that was stopped (or that
+            # died) before the game started has no console.log at all, and this is then the only
+            # record of what it was doing - which is the whole difference between "it didn't work"
+            # and "it didn't work and nobody knows why".
+            with self.lock:
+                helper_lines = list(self.lines)
+            if helper_lines:
+                payload = ("\n".join(helper_lines) + "\n").encode("utf-8")
+                zf.writestr("helper.log", payload)
+                files.append({"path": "helper.log", "size": len(payload)})
             launch = os.path.join(self.root, "launch-command.txt")
             if os.path.exists(launch):
                 zf.write(launch, "launch-command.txt")
@@ -1723,7 +1848,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(409, {"error": str(exc)})
             return self._json(202, {"started": True, "instance": opts})
         if path == "/api/stop":
-            return self._json(200, {"stopped": s.stop(), "state": s.status()["state"]})
+            # One button, whichever state the session is in: mid-download it cancels, running
+            # it kills the game. The answer says which happened.
+            return self._json(200, s.cancel())
         if path == "/api/restore":
             blob = self._body()
             if not blob:

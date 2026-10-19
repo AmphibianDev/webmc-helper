@@ -165,7 +165,7 @@
       </div>
       <input id="loadercustom" placeholder="e.g. 0.19.5" style="display:none;margin-top:8px" />
       <button class="play" id="play" disabled>▶ &nbsp;Play</button>
-      <button class="stop" id="stop" style="display:none">■ &nbsp;Stop the game</button>
+      <button class="stop" id="stop" style="display:none">■ &nbsp;Stop everything</button>
       <div class="bar" id="bar"><i></i></div>
       <div class="statline"><strong id="phase" style="color:var(--text)">Ready</strong><span id="pct"></span></div>
       <div class="statline"><span id="instance">nothing has run yet</span><span id="netstat"></span></div>
@@ -505,6 +505,56 @@ async function loadVersions(){
   }
 }
 
+/* ================================================================= journal
+   A stop, a crash, or a helper that vanished mid-launch all have the same problem: by the
+   time the page knows, the thing that knew what happened is gone. So the page writes down
+   what it sees as it sees it - phase, progress, instance and the log - and keeps it. If a
+   session never ends properly, the next visit can still show what it recorded, and offer it
+   as a download for a bug report. Values are small: the log is capped. */
+const Journal = {
+  lines: [],
+  meta: {},
+  lastWrite: 0,
+  dirty: false,
+  KEY: "journal.json",
+
+  note(line){
+    this.lines.push(line);
+    if (this.lines.length > 3000) this.lines.splice(0, this.lines.length - 3000);
+    this.dirty = true;
+  },
+  update(fields){
+    Object.assign(this.meta, fields);
+    this.dirty = true;
+  },
+  async flush(force){
+    if (!this.dirty) return;
+    const now = Date.now();
+    if (!force && now - this.lastWrite < 2500) return;
+    this.lastWrite = now;
+    this.dirty = false;
+    const blob = new Blob([JSON.stringify({
+      meta: Object.assign({}, this.meta, { updatedAt: now, helper: state.helper }),
+      lines: this.lines
+    })], { type: "application/json" });
+    try { await Store.putIn("session", this.KEY, blob); } catch(e){}
+  },
+  async load(){
+    try {
+      const blob = await Store.getFrom("session", this.KEY);
+      if (!blob) return null;
+      const data = JSON.parse(await blob.text());
+      return (data && data.lines && data.lines.length) ? data : null;
+    } catch(e){ return null; }
+  },
+  async clear(){ try { await Store.remove("session", this.KEY); } catch(e){} },
+  summary(){
+    const m = this.meta || {};
+    return (m.instance ? m.instance + " · " : "") + (m.phase || "?") +
+           (m.startedAt ? " · started " + new Date(m.startedAt).toLocaleString() : "");
+  }
+};
+
 /* ================================================================= mods */
 function modName(title, file){ return title ? title : file.replace(/\.jar$/i, ""); }
 
@@ -674,6 +724,10 @@ async function refresh(){
        (inst.mods && inst.mods.length ? " · " + inst.mods.length + " mod(s)" : " · no mods") +
        (inst.username ? " · " + inst.username : ""))
     : "nothing has run yet";
+  Journal.update({ phase: st.phaseLabel || st.phase, state: st.state,
+                   instance: inst.version ? (inst.version + " " + (inst.loader || "")) : null,
+                   startedAt: st.startedAt ? st.startedAt * 1000 : null, mods: inst.mods || [] });
+  Journal.flush();
   $("netstat").textContent = st.downloadedBytes ? "downloaded " + fmt(st.downloadedBytes) : "";
   if (st.lastCleanup && !state.result) showReceipt(null, st.lastCleanup);
   if (st.lastCleanup && state.result && !$("receipt")._rich) showReceipt(state.result, st.lastCleanup);
@@ -688,14 +742,14 @@ async function pollLog(){
   if (!state.online) return;
   try {
     const j = await jget("/api/log?since=" + state.since, 8000);
-    for (const line of j.lines) logLine(line);
+    for (const line of j.lines) { logLine(line); Journal.note(line); }
     state.since = j.next;
+    await Journal.flush();
   } catch(e){}
 }
 
 function logLine(text, cls){
-  const el = $("log");
-  const div = document.createElement("div");
+  const el = $("log");  const div = document.createElement("div");
   if (cls) div.className = cls;
   else if (/\bERROR\b|Exception|FAILED|crash/i.test(text)) div.className = "e";
   else if (/fabric|Loading \d+ mods|WEBMC-DEMO|is running|accepted|restored|deleted|kept /i.test(text))
@@ -714,6 +768,10 @@ async function launch(){
   const box = $("receipt");
   box._rich = false;
   box.style.display = "none";
+  Journal.update({ phase: "Starting", state: "running",
+                   startedAt: Date.now() });
+  Journal.note("[page] asked for " + ($("version").value || "1.21.11") + " with " + loader);
+  Journal.flush(true);
   $("log").innerHTML = "";
   state.since = 0;
   showStop(true);
@@ -784,6 +842,8 @@ async function saveToBrowser(res){
             (cleanup.removed ? " — " + fmt(cleanup.removed) + " freed" : "") +
             (cleanup.gone ? ", and confirmed it is gone" : " — SOMETHING REMAINS"), "g");
     $("phase").textContent = "Finished — /tmp cleaned";
+    // The session zip carries the client's own log, so the running journal has done its job.
+    await Journal.clear();
   } catch (e){
     logLine("could not tell the helper to clean up: " + e.message +
             " (it will do it by itself when the deadline passes)", "e");
@@ -847,12 +907,56 @@ function showReceipt(res, cleanup){
   });
 }
 
+function showRecovery(j){
+  const box = $("receipt");
+  box.style.display = "";
+  box._rich = true;
+  box.innerHTML = "";
+  const h = document.createElement("h3");
+  h.textContent = "An earlier session stopped before this browser saved it";
+  box.appendChild(h);
+  const div = document.createElement("div");
+  div.className = "line";
+  div.innerHTML = "Its log survived here, so the reason did not disappear with it: <b>" +
+    Journal.summary() + "</b>";
+  box.appendChild(div);
+  const pre = document.createElement("div");
+  pre.className = "console";
+  pre.style.cssText = "max-height:170px;margin-top:9px;border:1px solid var(--edge);border-radius:6px";
+  pre.textContent = j.lines.slice(-14).join("\n");
+  box.appendChild(pre);
+  const acts = document.createElement("div");
+  acts.style.marginTop = "10px";
+  acts.innerHTML = '<a href="#" id="dljournal">save this log</a> &nbsp;·&nbsp; ' +
+                   '<a href="#" id="forgetjournal">forget it</a> &nbsp;·&nbsp; ' +
+                   '<span class="hint" style="display:inline">it is in this browser only</span>';
+  box.appendChild(acts);
+  $("dljournal").onclick = async (e) => {
+    e.preventDefault();
+    const text = "webmc-helper: uncollected session\n" + Journal.summary() + "\n\n" + j.lines.join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+    a.download = "webmc-uncollected-log.txt";
+    a.click();
+  };
+  $("forgetjournal").onclick = async (e) => {
+    e.preventDefault();
+    await Journal.clear();
+    box.style.display = "none";
+    box._rich = false;
+  };
+}
+
 /* ================================================================= wiring */
 $("connect").onclick = () => { state.helper = $("helper").value.trim().replace(/\/$/, ""); probe(true); };
 $("play").onclick = launch;
 $("stop").onclick = async () => {
-  try { await api("/api/stop", { method:"POST" }); logLine("stop requested"); }
-  catch (e){ logLine("stop failed: " + e.message, "e"); }
+  $("phase").textContent = "Stopping…";
+  try {
+    const r = await (await api("/api/stop", { method:"POST", timeout: 60000 })).json();
+    logLine("stopped: " + (r.downloads ? r.downloads + " download(s) killed" : "no download was in flight") +
+            (r.game ? ", the game was terminated" : "") + " — whatever it managed to do is still kept", "g");
+  } catch (e){ logLine("stop failed: " + e.message, "e"); }
   startPolling();
 };
 $("help").onclick = () => $("about").showModal();
@@ -951,6 +1055,15 @@ $("openlocal2").onclick = (e) => { e.preventDefault(); window.open("http://127.0
   }
   Store.usage().then(est => {
     if (est.used) logLine("this browser already holds " + fmt(est.used) + " for this page");
+  });
+  // A stop, a crash or a helper that vanished: if the last session never got collected, the
+  // journal it left behind is the only evidence, so offer it rather than quietly losing it.
+  Journal.load().then(async (j) => {
+    if (!j) return;
+    const state_ = (j.meta || {}).state || "";
+    const stored = await Store.get(KEY);
+    if (stored && /exited|cancelled/i.test(state_)) { await Journal.clear(); return; }
+    if (!/exited|cancelled/i.test(state_)) showRecovery(j);
   });
 })();
 </script>
