@@ -84,6 +84,40 @@ python3 webmc_helper.py --audit --audit-clean      # remove leftovers; touches n
 The audit claims only what this helper makes — a sandbox, or a stray curl config — and reports
 anything else that merely shares the `webmc-` prefix as a count it does not touch.
 
+## Two ways to start it, both leaving nothing behind
+
+**The clean one, on a Mac: a Shortcut.** It fetches the helper into `/tmp` and runs it there, so
+nothing of ours is ever installed: no download kept, no launch agent, no staging directory. When
+the session ends the helper deletes its own folder, and `/tmp` is as it was.
+
+Make it once (about a minute, no download, no untrusted-shortcut settings):
+
+1. Open **Shortcuts**, press **+**.
+2. Add the action **Run Shell Script**.
+3. Set **Pass Input** to **to stdin**, and paste this:
+
+```sh
+D=$(mktemp -d /tmp/webmc.XXXXXX) && cd "$D" && \
+  curl -fsSL https://amphibiandev.github.io/webmc-launcher/helper/webmc-helper.zip -o h.zip && \
+  ditto -x -k h.zip . && rm h.zip && \
+  WEBMC_TRANSIENT=1 \
+  WEBMC_PAGE_URL=https://amphibiandev.github.io/webmc-launcher/local.html \
+  ./webmc-helper.command
+```
+
+4. Name it exactly **WebMC Helper** and save. The first run asks once for
+   **Shortcuts → Settings → Advanced → Allow Running Scripts**.
+
+Then the launcher page can start it for you: press *Start the helper for me*, allow the one
+"Open Shortcuts?" prompt, and the page waits until the helper answers before enabling Play.
+
+A downloadable `.shortcut` file is *not* the recommended route: `shortcuts` can run, list and
+sign, but it cannot create or import, and importing somebody else's shortcut needs macOS's hidden
+**Allow Untrusted Shortcuts** toggle. Four steps you do once beat a toggle you cannot find.
+
+**The other way: install it once.** One double-click, then it starts at every login (below).
+More convenient, two small files persist, `--uninstall` removes them.
+
 ## Run it on this machine
 
 **One file, nothing installed.** Download `webmc-helper.zip`, double-click it to unzip, then

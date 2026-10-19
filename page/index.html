@@ -230,7 +230,34 @@
         <div class="hint" id="connhint"></div>
         <div id="offline" style="display:none">
           <div class="warn" id="offlinetext"></div>
-          <div id="gethelper" style="display:none">
+          <div id="shortcutbox" style="display:none">
+        <div class="hint" style="color:var(--text);margin-top:14px">
+          <b>macOS: start it for me.</b> The Shortcut fetches the helper into <code>/tmp</code>,
+          runs it, and when the session ends the helper deletes itself and its folder. Nothing is
+          installed, and nothing survives.
+        </div>
+        <button id="kickhelper" style="margin-top:9px">▶ &nbsp;Start the helper for me</button>
+        <div class="hint" id="kicks"></div>
+        <details style="margin-top:10px">
+          <summary>One-time: make that Shortcut (4 steps, about a minute)</summary>
+          <div class="body">
+            <ol class="steps">
+              <li>Open <b>Shortcuts</b> and press <b>+</b> for a new shortcut.</li>
+              <li>Add the action <b>Run Shell Script</b> (search for "shell").</li>
+              <li>Set <b>Pass Input</b> to <b>to stdin</b>, and paste this as the script:</li>
+            </ol>
+            <div class="hint"><code id="shellline" style="display:block;padding:9px;white-space:pre-wrap;word-break:break-all"></code></div>
+            <ol class="steps" start="4">
+              <li>Name it exactly <b>WebMC Helper</b> and save. The first run asks you to allow
+                scripts once: <b>Shortcuts → Settings → Advanced → Allow Running Scripts</b>.</li>
+            </ol>
+            <button id="copyline" style="margin-top:8px">Copy the line</button>
+            <div class="hint" id="copyok"></div>
+          </div>
+        </details>
+      </div>
+
+      <div id="gethelper" style="display:none">
             <div class="hint" style="color:var(--text)"><b>One-time setup, then Play always works.</b></div>
             <ol class="steps">
               <li><a id="zipdl" href="helper/webmc-helper.zip" download>Download webmc-helper.zip</a> and unzip it.</li>
@@ -695,6 +722,38 @@ async function searchMods(){
   }
 }
 
+/* ================================================================= macOS Shortcut
+   The cleanest thing this page can do on a Mac: call a Shortcut the visitor made once. The
+   Shortcut fetches the helper into /tmp and runs it, so no file of ours is installed and the
+   staging directory is deleted when the helper exits. */
+const SHORTCUT_NAME = "WebMC Helper";
+const SHELL_LINE = "D=$(mktemp -d /tmp/webmc.XXXXXX) && cd \"$D\" && curl -fsSL " +
+  "https://amphibiandev.github.io/webmc-launcher/helper/webmc-helper.zip -o h.zip && " +
+  "ditto -x -k h.zip . && rm h.zip && WEBMC_TRANSIENT=1 WEBMC_PAGE_URL=" +
+  "https://amphibiandev.github.io/webmc-launcher/local.html ./webmc-helper.command";
+
+async function startViaShortcut(){
+  const note = $("kicks");
+  note.textContent = "asking Shortcuts for \u201c" + SHORTCUT_NAME + "\u201d\u2026";
+  location.href = "shortcuts://run-shortcut?name=" + encodeURIComponent(SHORTCUT_NAME);
+  for (let i = 0; i < 40; i++){
+    await new Promise(r => setTimeout(r, 1500));
+    if (await probe(false)){
+      note.textContent = "the helper is up - press Play";
+      return;
+    }
+    note.textContent = "waiting for the helper\u2026 " + ((i + 1) * 1.5).toFixed(0) + "s";
+  }
+  note.textContent = "it did not come up. Check that the Shortcut is named exactly \u201c" +
+    SHORTCUT_NAME + "\u201d and that Allow Running Scripts is on.";
+}
+
+$("kickhelper").onclick = startViaShortcut;
+$("copyline").onclick = async () => {
+  try { await navigator.clipboard.writeText(SHELL_LINE); $("copyok").textContent = "copied"; }
+  catch (e){ $("copyok").textContent = "select it and copy by hand"; }
+};
+
 /* ================================================================= status, log */
 function showStop(on){
   $("stop").style.display = on ? "" : "none";
@@ -1038,6 +1097,12 @@ $("openlocal2").onclick = (e) => { e.preventDefault(); window.open("http://127.0
   if (hosted){
     $("zipdl").href = "helper/webmc-helper.zip";
     $("openlocal2").style.display = "";
+  }
+  // Only on a Mac, and only where the Shortcut can help: a public page reaching 127.0.0.1 is
+  // exactly what Chromium gates, and Shortcuts is the way around it.
+  if (/Mac/i.test(navigator.userAgent)){
+    $("shellline").textContent = SHELL_LINE;
+    $("shortcutbox").style.display = "";
   }
   const where = connection();
   if (state.helper){

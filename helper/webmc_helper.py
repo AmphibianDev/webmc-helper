@@ -2772,6 +2772,17 @@ def main(argv=None):
         else:
             print("  --keep was given: %s is still there" % cfg.root)
         httpd.server_close()
+        # A transient run (started by a Shortcut, say) is staged in /tmp by the file that launched
+        # it. Deleting that staging directory here is what makes "nothing left behind" include the
+        # helper as well as the game.
+        staging = os.environ.get("WEBMC_CLEANUP_DIR")
+        if staging and os.path.isdir(staging) and os.path.abspath(staging).startswith("/tmp/"):
+            size = sum(os.path.getsize(os.path.join(b, f))
+                       for b, _d, fs in os.walk(staging) for f in fs
+                       if os.path.exists(os.path.join(b, f)))
+            shutil.rmtree(staging, ignore_errors=True)
+            print("  removed the staging directory %s (%.1f MB)"
+                  % (staging, size / 1048576.0))
     return 0
 
 
