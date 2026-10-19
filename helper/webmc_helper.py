@@ -91,6 +91,33 @@ LOADER_METADATA = {
     "neoforge": "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml",
 }
 LOADER_KINDS = ("fabric", "forge", "neoforge", "none")
+
+# When Mojang (or Fabric, or Modrinth) is unreachable from the visitor's network, everything can
+# be fetched through one relay instead: it maps straight onto the upstream URLs, so nothing else in
+# this file has to know. See relay/ for the Cloudflare Worker that does it.
+RELAY_PREFIXES = (
+    ("https://piston-meta.mojang.com", "piston-meta"),
+    ("https://piston-data.mojang.com", "piston-data"),
+    ("https://resources.download.minecraft.net", "resources"),
+    ("https://libraries.minecraft.net", "libraries"),
+    ("https://maven.fabricmc.net", "fabric-maven"),
+    ("https://meta.fabricmc.net", "fabric-meta"),
+    ("https://maven.minecraftforge.net", "forge-maven"),
+    ("https://maven.neoforged.net/releases", "neoforge-maven"),
+    ("https://api.modrinth.com", "modrinth"),
+    ("https://api.adoptium.net", "adoptium"),
+)
+
+
+def relayed(url, relay):
+    """Rewrite an upstream URL to go through the relay, if one is configured."""
+    if not relay:
+        return url
+    base = relay.rstrip("/")
+    for upstream, prefix in RELAY_PREFIXES:
+        if url.startswith(upstream):
+            return "%s/%s%s" % (base, prefix, url[len(upstream):])
+    return url
 # What this helper will actually launch. Forge and NeoForge are resolved, downloaded and merged
 # below - that part works and was verified as far as their bootstrap - but neither ships a usable
 # client jar: their own installer runs installertools over the vanilla jar to produce
@@ -224,6 +251,7 @@ class Curl:
         # points this at its own sandbox so that nothing of ours can survive outside
         # it, even if the helper dies mid-download.
         self.workdir = None
+        self.relay = None
         # Running curl processes, so a cancel can kill a download in flight instead of making
         # somebody wait for 430 MB of assets when they picked the wrong version.
         self._live = set()
@@ -283,6 +311,7 @@ class Curl:
 
     def get(self, url, dest=None, sha1=None, timeout=900, headers=()):
         """Download to dest (or return bytes when dest is None)."""
+        url = relayed(url, getattr(self, "relay", None))
         if dest and sha1 and os.path.exists(dest) and sha1_of(dest) == sha1:
             return dest  # already there, and correct
         args = self._base() + ["-m", str(timeout)]
@@ -956,6 +985,11 @@ class Session:
                   os.path.join(self.game_dir, "saves")):
             os.makedirs(d, exist_ok=True)
         self.curl.workdir = self.root
+        if getattr(self.cfg, "relay", None):
+            # Everything downloaded this session goes through the relay instead of straight to
+            # Mojang - which is the point of it on a network that blocks Mojang.
+            self.curl.relay = self.cfg.relay
+            self.log("relay: every download goes through %s" % self.cfg.relay)
         self._write_owner()
         self._link_cache()
 
@@ -1935,6 +1969,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "platform": {"os": os_name(), "arch": os_arch(), "version": os_version()},
                 "sandbox": self.server.session.root,
                 "proxy": self.server.curl.proxy or "direct",
+                "relay": s.cfg.relay or None,
                 "downloads": self.server.curl.bytes_in,
                 "autocleanSeconds": s.cfg.autoclean,
                 "features": ["fabric", "real-jvm", "opfs-bundle", "restore", "modrinth",
@@ -2004,6 +2039,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "version": body.get("version") or DEFAULT_VERSION,
                 "loader": body.get("loader") or "auto",
                 "loaderKind": body.get("loaderKind") or "fabric",
+                "relay": body.get("relay") or self.server.session.cfg.relay,
                 "mods": body.get("mods") or [],
                 "username": body.get("username") or "Player",
                 "memory": body.get("memory") or DEFAULT_MEMORY,
@@ -2538,6 +2574,9 @@ def parse_args(argv):
     ap.add_argument("--java", default=None, help="java executable to use")
     ap.add_argument("--proxy", default=None,
                     help="SOCKS/HTTP proxy for downloads, or 'none' (default: auto)")
+    ap.add_argument("--relay", default=os.environ.get("WEBMC_RELAY") or None, metavar="URL",
+                    help="fetch everything through this relay instead of directly (the Cloudflare "
+                         "Worker in relay/ does this), for networks where Mojang is blocked")
     ap.add_argument("--no-jre-download", action="store_true",
                     help="never fetch a JRE; fail instead")
     ap.add_argument("--keep", action="store_true",
@@ -2738,6 +2777,7 @@ def main(argv=None):
             "version": args.version,
             "loader": args.loader,
             "loaderKind": args.loader_kind,
+            "relay": args.relay,
             "mods": [m.strip() for m in (args.mods or "").split(",") if m.strip()],
             "localMods": list(args.mod_jar or []),
             "username": args.username,
