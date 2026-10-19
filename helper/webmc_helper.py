@@ -100,6 +100,11 @@ MODRINTH_API = "https://api.modrinth.com/v2"
 ADOPTIUM_API = "https://api.adoptium.net/v3"
 
 DEFAULT_VERSION = "1.21.11"
+
+# The single-file build (tools/publish-helper.py) puts the launcher page in here as base64, so
+# one downloadable .command can serve its own page without a folder of files next to it. In the
+# repository this is empty and the page is read from page/index.html as usual.
+_EMBEDDED_PAGE = ""
 DEFAULT_MEMORY = "2G"
 
 # Origin allowlist for the browser-side fetch. The page is either served by this
@@ -1579,6 +1584,75 @@ class Session:
             " - worlds: " + ", ".join(worlds) if worlds else ""))
         return self.result
 
+
+
+    def cleanup(self, why="the page asked for it"):
+        """Delete the sandbox. This is the promise the whole design rests on."""
+        if not os.path.isdir(self.root):
+            receipt = {"removed": 0, "path": self.root, "already": True, "why": why}
+            with self.lock:
+                self.last_cleanup = receipt
+            return receipt
+        if self.cfg.keep:
+            return {"removed": 0, "path": self.root, "kept": True, "why": why,
+                    "note": "--keep was given, nothing deleted"}
+        size = 0
+        files = 0
+        leftovers = []
+        for base, _dirs, names in os.walk(self.root):
+            for n in names:
+                full = os.path.join(base, n)
+                try:
+                    if os.path.islink(full):
+                        continue          # borrowed from the cache: not ours to count
+                    size += os.path.getsize(full)
+                    files += 1
+                except OSError:
+                    pass
+        shutil.rmtree(self.root, ignore_errors=True)
+        with self.lock:
+            self.cleanup_deadline = None
+        # Anything of ours that a crash could have scattered outside the sandbox.
+        for pattern in ("webmc-curl-*.conf", "webmc-*.part"):
+            import glob as _glob
+            for stray in _glob.glob(os.path.join(os.environ.get("TMPDIR", "/tmp"), pattern)):
+                try:
+                    size += os.path.getsize(stray)
+                    os.unlink(stray)
+                    leftovers.append(stray)
+                except OSError:
+                    pass
+        gone = not os.path.exists(self.root)
+        receipt = {"removed": size, "files": files, "path": self.root, "gone": gone,
+                   "why": why, "strays": leftovers, "at": time.time()}
+        with self.lock:
+            self.last_cleanup = receipt
+        self.log("deleted %s (%s files, %.1f MB freed)%s"
+                 % (self.root, files, size / 1048576.0,
+                    "" if gone else " -- SOMETHING IS STILL THERE"))
+        return receipt
+
+    def restore(self, blob):
+        """Put a previous session's bundle back into the game dir before launch.
+
+        The page calls this *after* cleanup has deleted the sandbox, so the whole
+        tree has to be rebuilt first - on a warm cache that costs nothing.
+        """
+        self._prepare_root()
+        tmp = os.path.join(self.root, "restore-%s.zip" % secrets.token_hex(4))
+        with open(tmp, "wb") as fh:
+            fh.write(blob)
+        count = 0
+        with zipfile.ZipFile(tmp) as zf:
+            for info in zf.namelist():
+                if info.startswith("/") or ".." in info.split("/"):
+                    continue
+                zf.extract(info, self.game_dir)
+                count += 1
+        os.unlink(tmp)
+        self.log("restored %d files from the browser into the sandbox" % count)
+        return {"restored": count}
+
     # ---------------------------------------------------------------- pushed mods
     @property
     def local_mods_dir(self):
@@ -2018,6 +2092,29 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 
 # --------------------------------------------------------------------------- cli
+
+def default_page(root):
+    """Where the launcher page is, when it is not given.
+
+    One file has to be able to serve its own page, so an embedded copy is written into the
+    sandbox; otherwise the page sits next to the helper in the repository layout.
+    """
+    if _EMBEDDED_PAGE:
+        try:
+            import base64
+            os.makedirs(root, exist_ok=True)
+            path = os.path.join(root, "page.html")
+            with open(path, "wb") as fh:
+                fh.write(base64.b64decode(_EMBEDDED_PAGE))
+            return path
+        except Exception:
+            return None
+    here = globals().get("__file__")
+    if not here:
+        return None
+    guess = os.path.join(os.path.dirname(os.path.abspath(here)), os.pardir, "page", "index.html")
+    return os.path.abspath(guess) if os.path.exists(guess) else None
+
 
 def default_root():
     return os.path.join("/tmp", "webmc-%s" % secrets.token_hex(4))
@@ -2528,6 +2625,16 @@ def main(argv=None):
     cfg.root = os.path.abspath(os.path.expanduser(cfg.root))
     install_signal_handlers()
 
+    # The single-file .command writes the helper out of a heredoc to a temp file. Once python has
+    # read it, that copy has no reason to exist: delete it, so "it leaves nothing behind" is true
+    # of the helper as well as of the game.
+    _self = os.environ.get("WEBMC_SELF_DELETE")
+    if _self:
+        try:
+            os.unlink(_self)
+        except OSError:
+            pass
+
     if args.audit:
         audit(root=cfg.root if os.path.isdir(cfg.root) else None,
               cache=cfg.cache, clean=args.audit_clean)
@@ -2562,11 +2669,7 @@ def main(argv=None):
         print("        or pass --proxy socks5h://host:port")
 
     session = Session(cfg, curl)
-    page = args.page
-    if not page:
-        guess = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             os.pardir, "page", "index.html")
-        page = os.path.abspath(guess)
+    page = args.page or default_page(cfg.root)
     token = secrets.token_hex(16)
     try:
         httpd = Server((args.host, args.port), Handler, session, curl, token, page,

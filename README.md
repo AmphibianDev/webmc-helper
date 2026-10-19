@@ -86,33 +86,26 @@ anything else that merely shares the `webmc-` prefix as a count it does not touc
 
 ## Run it on this machine
 
-**Nothing is installed.** The download is the helper: unzip it anywhere, double-click
-`webmc-helper/helper/start-helper.command`, and it starts in the background and closes its own
-window. Nothing is added to your home directory, no login item is created, and when you are done
-you can delete the folder — there is nothing else to undo.
+**One file, nothing installed.** Download `webmc-helper.zip`, double-click it to unzip, then
+double-click **`webmc-helper.command`**. That is the whole thing:
+
+* it starts in the background and its window closes itself,
+* the launcher page opens, and pressing **Play** there starts Minecraft on your desktop,
+* nothing is added to your home directory, no login item, no daemon,
+* it exits by itself when a session ends (or after half an hour of nobody using it), and the
+  folder it downloads the game into is deleted — including after a crash,
+* delete the file whenever; there is nothing else to undo.
 
 ```sh
-cd webmc-helper/helper
-./start-helper.command            # starts in the background, window closes itself
-WEBMC_FOREGROUND=1 ./start-helper.command    # or watch it in the terminal
-python3 webmc_helper.py --help
+WEBMC_FOREGROUND=1 ./webmc-helper.command    # watch it in the terminal instead
+WEBMC_CACHE=1 ./webmc-helper.command         # keep the ~430 MB of Mojang assets between runs
+./webmc-helper.command --help                # every flag still works
 ```
 
-It ends by itself: shortly after a session finishes (or after half an hour with nobody using the
-page), the helper deletes its sandbox and exits. There is no daemon, no menu bar icon, and no
-process left running when you are not playing.
-
-The useful flags, when started by hand:
-
-```sh
-python3 webmc_helper.py --server-only                 # wait for the page instead of launching now
-python3 webmc_helper.py --launch --loader-kind fabric --mods fabric-api,modmenu
-python3 webmc_helper.py --launch --version 1.12.2 --loader-kind fabric --no-assets
-python3 webmc_helper.py --launch --mod-jar ~/Downloads/sodium.jar
-WEBMC_CACHE=1 ./start-helper.command                  # keep the asset cache between runs
-python3 webmc_helper.py --audit                       # what it has on the machine, if anything
-python3 webmc_helper.py --uninstall                   # remove anything it did leave
-```
+Why a `.command` and why inside a zip: macOS gives a downloaded script **no executable bit** —
+measured, in a real browser — so a bare download cannot be double-clicked at all, and an `.app`
+is a directory rather than a file. A zip is the only thing that carries the bit across, and the
+script is the only single file macOS will run on a double-click without installing anything.
 
 ## Mod loaders
 
