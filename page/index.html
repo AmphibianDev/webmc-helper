@@ -1091,6 +1091,30 @@ $("openlocal").onclick = (e) => { e.preventDefault(); window.open("http://127.0.
 $("openlocal2").onclick = (e) => { e.preventDefault(); window.open("http://127.0.0.1:7645/", "_blank", "noopener"); };
 
 (function init(){
+  // A hosted page cannot fetch this one (a public page may not reach 127.0.0.1), but it *can*
+  // navigate the tab here - measured. So it hands its choices over in the fragment, and we start
+  // the game ourselves once connected.
+  const wanted = new URLSearchParams(location.hash.replace(/^#/, ""));
+  if (wanted.get("play")){
+    if (wanted.get("v")) $("version").dataset.want = wanted.get("v");
+    if (wanted.get("l")) {
+      const l = wanted.get("l");
+      if (["stable", "latest", "none"].includes(l)) $("loader").value = l;
+      else { $("loader").value = "custom"; $("loadercustom").value = l;
+             $("loadercustom").style.display = ""; }
+    }
+    if (wanted.get("m")) $("mods").value = wanted.get("m");
+    if (wanted.get("u")) $("username").value = wanted.get("u");
+    if (wanted.get("mem")) $("memory").value = wanted.get("mem");
+    state.autoPlay = true;
+  }
+  // An embedding page cannot read this document (different origin), so it can only ask us who we
+  // are. Answering is what lets a hosted page prove the local launcher really loaded.
+  window.addEventListener("message", (e) => {
+    if (e.data && e.data.webmc === "hello" && e.source){
+      e.source.postMessage({ webmc: "hello-back", name: "webmc-helper", version: "0.1.0" }, "*");
+    }
+  });
   loadSlugs();
   renderMods();
   $("helper").value = state.helper || "http://127.0.0.1:7645";
@@ -1107,7 +1131,14 @@ $("openlocal2").onclick = (e) => { e.preventDefault(); window.open("http://127.0
   const where = connection();
   if (state.helper){
     setConn("busy", "contacting…");
-    probe(false);
+    probe(false).then((ok) => {
+      if (ok && state.autoPlay){
+        state.autoPlay = false;
+        logLine("a launcher page asked for " + ($("version").dataset.want || $("version").value) +
+                " - starting it");
+        launch();
+      }
+    });
   } else {
     setConn("bad", "not connected");
     showOffline("down");
