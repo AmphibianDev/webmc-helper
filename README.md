@@ -86,19 +86,56 @@ anything else that merely shares the `webmc-` prefix as a count it does not touc
 
 ## Run it on this machine
 
+There is no terminal in this path, on purpose. Download **[WebMC Helper.zip]**, unzip it, and
+double-click **WebMC Helper.app**. That is the whole setup:
+
+1. it copies itself into `~/Library/Application Support/webmc`,
+2. writes one user launch agent (a plist in `~/Library/LaunchAgents`),
+3. asks launchd to start it now and at every login,
+4. opens the launcher page.
+
+From then on the page finds a helper already running. Close the app, close the browser, reboot:
+it is there. The game still runs in a throwaway directory under `/tmp` and that directory is
+deleted when a session ends — the only things that persist are those two small files, and
+`--uninstall` removes both:
+
 ```sh
-cd webmc-helper/helper
-./start-helper.command            # double-click it in Finder too; it opens the page for you
+python3 "$HOME/Library/Application Support/webmc/helper/webmc_helper.py" --uninstall
+python3 "$HOME/Library/Application Support/webmc/helper/webmc_helper.py" --audit
 ```
 
-Then press **Play** on the page it opens. First launch downloads the client, Fabric, and ~430 MB of
-assets into `/tmp`; later launches with the cache are near-instant.
+**Nothing here needs an administrator.** macOS runs a user's own launch agents without one, and
+this writes only inside your home directory and `/tmp`. What it touches, verbatim from `--audit`:
+
+```
+  writes to            /tmp/webmc-<random>/ - and nothing else; that path is deleted when the session ends
+  privileges           none: no sudo, no administrator, no installer, no write outside /tmp and your own home
+  installed            /Users/you/Library/Application Support/webmc
+                       /Users/you/Library/LaunchAgents/dev.amphibian.webmc-helper.plist
+                       installed on purpose so the page always finds a helper; remove both with --uninstall
+```
+
+The first launch may still meet Gatekeeper ("Apple could not verify..."). Right-click the app and
+choose **Open** once; that is the cost of an unsigned download, and a Developer ID signature is
+what removes it.
+
+In the zip: the app (which carries the helper, the page it serves, and a
+`helper/start-helper.command` for anyone who prefers a terminal) and this README. Nothing else —
+no tests, no templates, no build output, and a drift test asserts that file list.
+
+For anyone starting it by hand instead, everything below still works.
 
 ```sh
-# same thing, by hand, with more control
+cd "$HOME/Library/Application Support/webmc/helper"   # or wherever you kept it
+./start-helper.command            # Finder: runs in the background and closes its own window
+WEBMC_FOREGROUND=1 ./start-helper.command             # or watch it in a terminal
+python3 webmc_helper.py --install                     # the app's own install step
 python3 webmc_helper.py --help
+```
 
-# the useful ones
+The useful flags, when started by hand:
+
+```sh
 python3 webmc_helper.py --server-only                 # wait for the page instead of launching now
 python3 webmc_helper.py --launch --mods fabric-api,modmenu
 python3 webmc_helper.py --launch --loader 0.19.5 --no-assets
@@ -106,13 +143,6 @@ python3 webmc_helper.py --launch --mod-jar ~/Downloads/sodium.jar
 WEBMC_CACHE=1 ./start-helper.command                  # keep the asset cache between runs
 python3 webmc_helper.py --print-token --page-url https://derek.github.io/webmc/
 ```
-
-`--cache <dir>` (or `WEBMC_CACHE=1`) keeps *only* Mojang's immutable files — assets, libraries, the
-client jar, and the Fabric loader profile — in `~/Library/Caches/webmc`, and symlinks them into the
-sandbox. The sandbox still gets deleted; the cache is opt-in because the promise is that a session
-leaves nothing behind, and only you can decide to trade that for speed. With a warm cache the helper
-needs no network at all: it will even reuse the cached Fabric loader if `meta.fabricmc.net` is
-unreachable.
 
 ## The page works in two places
 

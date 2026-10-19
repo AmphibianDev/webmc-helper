@@ -2035,6 +2035,152 @@ def _boot_id():
         return ""
 
 
+AGENT_LABEL = "dev.amphibian.webmc-helper"
+INSTALLED_DIR = "~/Library/Application Support/webmc"
+AGENT_PLIST = "~/Library/LaunchAgents/dev.amphibian.webmc-helper.plist"
+LOG_FILE = "~/Library/Logs/webmc-helper.log"
+SHIPPED = (("helper/webmc_helper.py", 0o755),
+           ("helper/start-helper.command", 0o755),
+           ("page/index.html", 0o644))
+
+
+def installed_paths():
+    return {"dir": os.path.expanduser(INSTALLED_DIR),
+            "plist": os.path.expanduser(AGENT_PLIST),
+            "log": os.path.expanduser(LOG_FILE)}
+
+
+def agent_plist_text(python, helper, page_url, port):
+    def esc(text):
+        return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+    args = [python, helper, "--server-only", "--port", str(port)]
+    if page_url:
+        args += ["--page-url", page_url]
+    return """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>%s</string>
+  <key>ProgramArguments</key>
+  <array>%s</array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><false/>
+  <key>WorkingDirectory</key><string>%s</string>
+  <key>StandardOutPath</key><string>%s</string>
+  <key>StandardErrorPath</key><string>%s</string>
+</dict>
+</plist>
+""" % (AGENT_LABEL,
+       "".join("<string>%s</string>" % esc(a) for a in args),
+       esc(os.path.dirname(helper)),
+       esc(os.path.expanduser(LOG_FILE)), esc(os.path.expanduser(LOG_FILE)))
+
+
+def install(base_dir, page_url=None, port=7645, log=print, open_page=True):
+    """Install for a Mac with no terminal in the way.
+
+    macOS runs a user's own launch agents without an administrator, so this needs no
+    privilege: it copies the helper into the user's Application Support, writes one plist
+    into the user's LaunchAgents, and asks launchd to start it now and at every login. The
+    point is that nobody has to open Terminal or keep a window alive - the page finds a
+    helper already running.
+
+    It still keeps nothing of the game: the sandbox under /tmp is deleted as usual, and
+    `--uninstall` removes both files in one step.
+    """
+    if os_name() != "osx":
+        log("  --install is the macOS path; elsewhere run it however you start things")
+        return 1
+    paths = installed_paths()
+    # Already up (a second double-click, or an app opened twice): do not start a second one on
+    # the same port and report it as a failure.
+    if already_running("127.0.0.1", port):
+        log("  a helper is already running on 127.0.0.1:%d - nothing to do" % port)
+        if open_page:
+            url = "http://127.0.0.1:%d/" % port
+            if page_url:
+                url = "%sgo?to=%s" % (url, urllib.parse.quote(page_url, safe=""))
+            threading.Timer(0.8, lambda: subprocess.run(["open", url])).start()
+        return 0
+    os.makedirs(os.path.join(paths["dir"], "helper"), exist_ok=True)
+    os.makedirs(os.path.join(paths["dir"], "page"), exist_ok=True)
+    for rel, mode in SHIPPED:
+        src = os.path.join(base_dir, rel)
+        if not os.path.exists(src):
+            log("  %s is missing; nothing installed" % src)
+            return 2
+        dst = os.path.join(paths["dir"], rel)
+        shutil.copy2(src, dst)
+        os.chmod(dst, mode)
+    log("  copied the helper to %s" % paths["dir"])
+
+    helper = os.path.join(paths["dir"], "helper", "webmc_helper.py")
+    plist = agent_plist_text(sys.executable or "/usr/bin/python3", helper,
+                             page_url, port)
+    os.makedirs(os.path.dirname(paths["plist"]), exist_ok=True)
+    with open(paths["plist"], "w") as fh:
+        fh.write(plist)
+    log("  wrote a launch agent: %s" % paths["plist"])
+
+    uid = os.getuid()
+    target = "gui/%d" % uid
+    subprocess.run(["launchctl", "bootout", "%s/%s" % (target, AGENT_LABEL)],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    started = subprocess.run(["launchctl", "bootstrap", target, paths["plist"]],
+                             capture_output=True, text=True)
+    if started.returncode != 0:
+        log("  launchctl could not start it: %s" % (started.stderr or started.stdout).strip())
+        log("  the page still works if you start it by hand; see --help")
+    else:
+        # bootstrap already launches it (RunAtLoad). Asking again with kickstart -k kills the
+        # instance that just came up - which is exactly the "installed but nothing is
+        # listening" symptom this had before.
+        for _ in range(20):
+            if already_running("127.0.0.1", port):
+                break
+            time.sleep(0.5)
+        if not already_running("127.0.0.1", port):
+            subprocess.run(["launchctl", "kickstart", "%s/%s" % (target, AGENT_LABEL)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(1.5)
+        if already_running("127.0.0.1", port):
+            log("  launchd started it, and starts it again at every login")
+        else:
+            log("  launchd has it, but nothing is answering yet - the page will say so; "
+                "see %s" % paths["log"])
+    log("  log: %s" % paths["log"])
+    log("  remove it again with: python3 '%s' --uninstall" % helper)
+
+    if open_page:
+        url = "http://127.0.0.1:%d/" % port
+        if page_url:
+            url = "%sgo?to=%s" % (url, urllib.parse.quote(page_url, safe=""))
+        threading.Timer(1.2, lambda: subprocess.run(["open", url])).start()
+    return 0
+
+
+def uninstall(log=print):
+    paths = installed_paths()
+    uid = os.getuid()
+    subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (uid, AGENT_LABEL)],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    removed = []
+    for key in ("plist", "dir"):
+        path = paths[key]
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+            removed.append(path)
+        elif os.path.exists(path):
+            os.unlink(path)
+            removed.append(path)
+    freed, count = sweep_stale_sandboxes(older_than=0, keep=None, log=lambda *_: None)
+    log("  removed: %s" % (", ".join(removed) if removed else "nothing (it was not installed)"))
+    if count:
+        log("  and cleared %d leftover sandbox item(s), %.1f MB" % (count, freed / 1048576.0))
+    log("  the log is left behind on purpose: %s" % paths["log"])
+    return 0
+
+
 def audit(root=None, cache=None, clean=False, log=print):
     """Say what *this helper* has on the machine, and optionally remove it.
 
@@ -2117,6 +2263,13 @@ def audit(root=None, cache=None, clean=False, log=print):
         log("  %-20s %s" % ("cache", path))
         log("  %-20s %.1f MB %s" % ("", size / 1048576.0,
               "- kept on purpose, only ever used with --cache" if size else "- not present"))
+    paths = installed_paths()
+    if os.path.exists(paths["plist"]) or os.path.isdir(paths["dir"]):
+        log("  %-20s %s" % ("installed", paths["dir"]))
+        log("  %-20s %s" % ("", paths["plist"]))
+        log("  %-20s installed on purpose so the page always finds a helper; remove both"
+            % "")
+        log("  %-20s with --uninstall (no administrator needed)" % "")
     if theirs:
         log("  %-20s %d other webmc-* entries in the temp directory that this helper"
             % ("not ours", theirs))
@@ -2124,8 +2277,9 @@ def audit(root=None, cache=None, clean=False, log=print):
     log("  %-20s %s" % ("writes to", (root or "/tmp/webmc-<random>/") +
                                         " - and nothing else; that path is deleted when "
                                         "the session ends"))
-    log("  %-20s %s" % ("privileges", "none needed: no sudo, no installer, no launch agent, "
-                                      "no write outside /tmp; it listens on 127.0.0.1 only"))
+    log("  %-20s %s" % ("privileges", "none: no sudo, no administrator, no installer, no write "
+                                      "outside /tmp and your own home; it listens on "
+                                      "127.0.0.1 only"))
     log("")
     if clean:
         removed = 0
@@ -2213,6 +2367,11 @@ def parse_args(argv):
                     help="skip the ~450 MB of sounds and textures")
     ap.add_argument("--dry-run", action="store_true",
                     help="download everything, build the command, do not start the game")
+    ap.add_argument("--install", action="store_true",
+                    help="macOS: copy this into Application Support, start it with launchd now "
+                         "and at every login, so nothing has to be run by hand (no admin needed)")
+    ap.add_argument("--uninstall", action="store_true",
+                    help="remove what --install put there (and any leftover sandbox)")
     ap.add_argument("--audit", action="store_true",
                     help="say what this project has left on the machine, then exit")
     ap.add_argument("--audit-clean", action="store_true",
@@ -2283,6 +2442,14 @@ def main(argv=None):
         audit(root=cfg.root if os.path.isdir(cfg.root) else None,
               cache=cfg.cache, clean=args.audit_clean)
         return 0
+
+    if args.uninstall:
+        uninstall()
+        return 0
+
+    if args.install:
+        return install(os.path.dirname(os.path.abspath(__file__)) + os.sep + os.pardir,
+                       page_url=args.page_url, port=args.port)
 
     print("")
     print("  %s %s" % (NAME, VERSION))
