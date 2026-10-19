@@ -777,7 +777,7 @@ function handOver(){
     play: "1",
     v: $("version").value || "1.21.11",
     l: loader,
-    m: $("mods").value || "",
+    m: (state.slugs || []).join(","),
     u: $("username").value.trim() || "Player",
     mem: $("memory").value.trim() || "2G",
   });
@@ -1139,7 +1139,14 @@ $("openlocal2").onclick = (e) => { e.preventDefault(); window.open("http://127.0
       else { $("loader").value = "custom"; $("loadercustom").value = l;
              $("loadercustom").style.display = ""; }
     }
-    if (wanted.get("m")) $("mods").value = wanted.get("m");
+    if (wanted.get("m")){
+      // The Mods field became a list of Modrinth slugs in the redesign, so the fragment fills
+      // that list rather than an input that no longer exists.
+      state.slugs = wanted.get("m").split(",").map(x => x.trim()).filter(Boolean);
+      state.slugsMeta = state.slugsMeta || {};
+      saveSlugs();
+      renderMods();
+    }
     if (wanted.get("u")) $("username").value = wanted.get("u");
     if (wanted.get("mem")) $("memory").value = wanted.get("mem");
     state.autoPlay = true;
