@@ -1952,9 +1952,11 @@ def audit(root=None, cache=None, clean=False, log=print):
                              "abandoned": bool(owner and not pid_alive(owner.get("pid")))})
     for base in (tmp, "/tmp"):
         for path in _glob.glob(os.path.join(base, "webmc-*")):
-            if path not in seen and path not in (os.path.abspath(os.path.expanduser(cache))
-                                                 if cache else None):
-                theirs += 1
+            if path in seen:
+                continue
+            if cache and path == os.path.abspath(os.path.expanduser(cache)):
+                continue
+            theirs += 1
     if root and os.path.isdir(root) and os.path.abspath(root) not in seen:
         mine.append({"path": root, "kind": "this session's sandbox", "bytes": size_of(root),
                      "owner": read_owner(root), "abandoned": False})
