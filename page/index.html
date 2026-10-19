@@ -601,6 +601,16 @@ function showOffline(kind){
       'helper\u2019s own page at <code>http://127.0.0.1:7645/</code>, which starts the game ' +
       'without asking for any permission.</div>';
   }
+  // A hosted copy that has reached a helper before does not ask again: this browser will not allow
+  // the direct route on this origin, and handing the tab over is the route it does allow.
+  let seen = false;
+  try { seen = !!localStorage.getItem(LS+"seenHelper"); } catch(e){}
+  if (hosted && seen && !state.handedOver){
+    state.handedOver = true;
+    logLine("this browser has reached the helper before and refuses a direct fetch, so this page " +
+            "is handing the tab over by itself");
+    setTimeout(handOver, 900);
+  }
 }
 
 async function probe(explicit){
@@ -630,17 +640,6 @@ async function probe(explicit){
     $("play").disabled = false;
     $("connhint").innerHTML = "Last error: <code>" + (e.message || e) + "</code>";
     showOffline((e && e.status === 403) ? "token" : "blocked");
-    // A hosted copy that has reached a helper before does not make the visitor click twice: this
-    // browser refuses the direct route, and handing over is the one route it allows.
-    if (hosted && !explicit){
-      let seen = false;
-      try { seen = !!localStorage.getItem(LS+"seenHelper"); } catch(e2){}
-      if (seen){
-        logLine("this browser has reached the helper before and will not allow a direct fetch " +
-                "now, so this page is handing the tab over");
-        setTimeout(handOver, 800);
-      }
-    }
     return false;
   }
 }
