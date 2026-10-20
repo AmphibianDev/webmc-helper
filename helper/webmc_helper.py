@@ -1963,7 +1963,12 @@ class Session:
                     self.log("could not put the previous session back: %s" % exc)
             self._preseed_options()
             mc_version = opts["version"]
-            required = 21
+
+            # ---- version metadata, read first because it says which Java the client needs
+            # (26.x is compiled for Java 25; handing it Java 21 fails with "class file version 69.0")
+            self._phase("metadata", "reading %s from Mojang" % mc_version)
+            vjson, vurl = self._version_json(mc_version)
+            required = int((vjson.get("javaVersion") or {}).get("majorVersion") or 21)
 
             # ---- java
             self._phase("java", "looking for a Java runtime")
@@ -1991,9 +1996,6 @@ class Session:
             self.java_major = major
             self.log("java: %s (%d)" % (java, major))
 
-            # ---- version metadata
-            self._phase("metadata", "reading %s from Mojang" % mc_version)
-            vjson, vurl = self._version_json(mc_version)
             self.log("client: %s (%d MB)" % (
                 vjson["id"], vjson["downloads"]["client"]["size"] // (1 << 20)))
 
