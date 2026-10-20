@@ -3248,6 +3248,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                               else "auto" if (s.cfg.relay if s else reg.cfg.relay) else "off"),
                 "downloads": self.server.curl.bytes_in,
                 "autocleanSeconds": (s.cfg.autoclean if s else reg.cfg.autoclean),
+                "footprint": machine_footprint(cache=s.cfg.cache if s else reg.cfg.cache),
                 "features": ["fabric", "real-jvm", "opfs-bundle", "restore", "modrinth",
                              "local-mods", "mod-search", "audit"],
             })
@@ -3366,6 +3367,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(200, s.restore(blob))
             except Exception as exc:  # noqa: BLE001
                 return self._json(400, {"error": "not a usable bundle: %s" % exc})
+        if path == "/api/purge":
+            body = self._read_json()
+            result = purge(cache=self.server.registry.cfg.cache, log=lambda m: print(m, flush=True))
+            return self._json(200, {"ok": True, "removed": result["removed"],
+                                    "bytes": result["bytes"]})
         if path == "/api/cleanup":
             if not s:
                 return self._json(200, {"removed": 0, "gone": True, "already": True})
@@ -3720,6 +3726,92 @@ def install(source_py, page_url=None, port=7645, log=print, open_page=True):
     return 0
 
 
+def dir_bytes(path):
+    total = 0
+    for base, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(base, name))
+            except OSError:
+                pass
+    return total
+
+
+def temp_sandboxes():
+    """Every sandbox this helper left in the temp directory, newest last."""
+    import glob as _glob
+    found, seen = [], set()
+    for base in {os.environ.get("TMPDIR", "/tmp"), "/tmp"}:
+        for path in _glob.glob(os.path.join(base, "webmc-*")):
+            name = os.path.basename(path)
+            if path in seen:
+                continue
+            if not (os.path.isdir(path) and (read_owner(path) is not None
+                                             or re.fullmatch(r"webmc-[0-9a-f]{8}", name))):
+                continue
+            seen.add(path)
+            found.append(path)
+    return found
+
+
+def machine_footprint(cache=None):
+    """Everything of ours on this machine, with sizes, so "nothing is left" is checkable.
+
+    The audit used to look only at /tmp. That is how 592 MB of cached assets sat on a machine whose
+    owner had asked for nothing to be left there: the promise has to be an inventory, not a glance.
+    """
+    paths = installed_paths()
+    items = []
+    for key, label in (("dir", "installed helper"), ("plist", "login agent"),
+                       ("log", "log file")):
+        path = os.path.expanduser(paths[key])
+        if os.path.exists(path) or os.path.isdir(path):
+            items.append({"what": label, "path": path,
+                          "bytes": dir_bytes(path) if os.path.isdir(path) else os.path.getsize(path)})
+    if cache:
+        cache_path = os.path.abspath(os.path.expanduser(cache))
+        if os.path.isdir(cache_path):
+            items.append({"what": "download cache", "path": cache_path,
+                          "bytes": dir_bytes(cache_path)})
+    store = session_store_dir()
+    if os.path.isdir(store):
+        items.append({"what": "kept sessions", "path": store, "bytes": dir_bytes(store)})
+    for path in temp_sandboxes():
+        items.append({"what": "sandbox", "path": path, "bytes": dir_bytes(path)})
+    return items
+
+
+def purge(cache=None, log=print, keep_log=False):
+    """Remove every trace of this launcher from this machine, and say what was removed."""
+    items = machine_footprint(cache=cache)
+    if not items:
+        log("  this machine has nothing of ours on it: no files, no cache, no login item")
+        return {"removed": [], "bytes": 0}
+    freed = 0
+    removed = []
+    # the login item first, so nothing restarts while the rest goes
+    uid = os.getuid()
+    subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (uid, AGENT_LABEL)],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for item in items:
+        if keep_log and item["what"] == "log file":
+            continue
+        path = item["path"]
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                os.unlink(path)
+            removed.append(item["what"])
+            freed += item["bytes"]
+            log("  removed %-16s %s" % (item["what"], path))
+        except Exception as exc:  # noqa: BLE001
+            log("  could not remove %s: %s" % (path, exc))
+    log("  %d thing(s), %.1f MB. Nothing of ours is on this machine now."
+        % (len(removed), freed / 1048576.0))
+    return {"removed": removed, "bytes": freed}
+
+
 def uninstall(log=print):
     paths = installed_paths()
     uid = os.getuid()
@@ -3741,7 +3833,12 @@ def uninstall(log=print):
         # printed five million "items" for 5.5 MB of sandboxes, which is a good way to frighten
         # somebody who is about to read the output of an uninstaller.
         log("  and cleared %d leftover sandbox(es), %.1f MB" % (cleared, freed / 1048576.0))
-    log("  the log is left behind on purpose: %s" % paths["log"])
+    if os.path.exists(os.path.expanduser(paths["log"])):
+        try:
+            os.unlink(os.path.expanduser(paths["log"]))
+            log("  removed the log too: %s" % paths["log"])
+        except OSError:
+            pass
     return 0
 
 
@@ -3969,6 +4066,9 @@ def parse_args(argv):
                          "now and at every login, so nothing has to be run by hand (no admin)")
     ap.add_argument("--install-source", default=None, metavar="PATH",
                     help="with --install: the file to install (default: this one)")
+    ap.add_argument("--purge", action="store_true",
+                    help="remove everything of ours from this machine (cache, installed files, "
+                         "login item, log, sandboxes) and say what went, then exit")
     ap.add_argument("--uninstall", action="store_true",
                     help="remove what --install put there (and any leftover sandbox)")
     ap.add_argument("--audit", action="store_true",
@@ -4066,6 +4166,12 @@ def main(argv=None):
     if args.audit:
         audit(root=cfg.root if os.path.isdir(cfg.root) else None,
               cache=cfg.cache, clean=args.audit_clean)
+        return 0
+
+    if getattr(args, "purge", False):
+        # before anything else, including the "a helper is already running" shortcut: a purge
+        # that silently opened a page instead would be worse than useless
+        purge(cache=cfg.cache)
         return 0
 
     if args.forget_sessions:

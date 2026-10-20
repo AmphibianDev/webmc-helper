@@ -522,8 +522,11 @@
         <div style="margin-top:16px;display:flex;gap:11px;flex-wrap:wrap">
           <button id="copydiag">Copy diagnostics</button>
           <button id="help">How this works</button>
+          <button class="danger" id="purge">Leave nothing on this machine</button>
         </div>
         <div class="hint" id="diagstate" style="margin-top:10px"></div>
+        <div class="hint" id="machineState" style="margin-top:11px"></div>
+        <div class="hint" id="purgeState" style="margin-top:6px"></div>
       </div>
     </section>
 
@@ -1480,6 +1483,43 @@ function relayUrlToTest(){
   const h = state.hello || {};
   return h.relay ? String(h.relay).replace(/\/$/, "") : "";
 }
+// The promise, made checkable from the page: what of ours is on this machine, and a way to remove it
+// without a terminal. Downloads are the one thing that grows on its own, so they are named.
+function showMachineState(){
+  const el = $("machineState");
+  if (!el) return;
+  const items = (state.hello && state.hello.footprint) || [];
+  if (!items.length){
+    el.textContent = "On this machine: nothing of ours. No files, no cache, no login item.";
+    return;
+  }
+  const bytes = items.reduce((sum, item) => sum + (item.bytes || 0), 0);
+  const names = {};
+  items.forEach((item) => { names[item.what] = (names[item.what] || 0) + 1; });
+  el.textContent = "On this machine: " + fmt(bytes) + " — " +
+    Object.keys(names).map((k) => k + (names[k] > 1 ? " ×" + names[k] : "")).join(", ") +
+    ". Sandboxes go when a session ends; the rest waits until you remove it.";
+}
+$("purge").onclick = async () => {
+  const line = $("purgeState");
+  const items = (state.hello && state.hello.footprint) || [];
+  if (!confirm("Remove everything this launcher has on this machine?\n\n" +
+               "Sandboxes, any download cache, the installed helper and its login item, the log.\n" +
+               "Your worlds, mods and settings are in this browser and are not touched.")) return;
+  line.textContent = items.length ? "removing " + items.length + " item(s)…" : "looking…";
+  try {
+    const answer = await (await api("/api/purge", { method:"POST", timeout:120000 })).json();
+    line.textContent = answer.removed && answer.removed.length
+      ? "removed " + answer.removed.length + " item(s), " + fmt(answer.bytes) +
+        " freed. Nothing of ours is on this machine now."
+      : "there was nothing of ours on this machine to begin with.";
+    state.hello = await jget("/api/hello", 4000);
+    showMachineState();
+  } catch (e){
+    line.textContent = "could not do it: " + ((e && e.message) || "no answer from the helper");
+  }
+};
+
 $("relayTest").onclick = async () => {
   const line = $("relayState");
   const url = relayUrlToTest();
