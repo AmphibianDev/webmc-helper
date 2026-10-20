@@ -18,7 +18,7 @@ end try
 
 -- One directory under /tmp, and everything happens there.
 set work to do shell script "mktemp -d /tmp/webmc-app.XXXXXX"
-set runCommand to "cd " & quoted form of work & " && curl -fsSL " & quoted form of helperArchive & " -o h.zip && ditto -x -k h.zip . && rm h.zip && WEBMC_PAGE_URL=" & quoted form of launcherPage & " ./webmc-helper.command --install >/dev/null 2>&1 &"
+set runCommand to "cd " & quoted form of work & " && curl -fsSL " & quoted form of helperArchive & " -o h.zip && ditto -x -k h.zip . && rm h.zip && WEBMC_PAGE_URL=" & quoted form of launcherPage & " WEBMC_CLEANUP_DIR=" & quoted form of work & " ./webmc-helper.command --install >/dev/null 2>&1 &"
 
 try
 	do shell script runCommand
@@ -31,12 +31,10 @@ repeat 40 times
 	delay 0.5
 	try
 		do shell script probeCommand
-		do shell script "rm -rf " & quoted form of work
 		open location launcherPage
 		return "WebMC is installed and running. Your launcher page is open."
 	end try
 end repeat
 
-do shell script "rm -rf " & quoted form of work
 open location "http://127.0.0.1:7645/"
 return "WebMC was installed but is not answering yet. Opening its own page."

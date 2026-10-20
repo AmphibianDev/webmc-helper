@@ -372,13 +372,29 @@
             </details>
           </div>
           <div id="gethelper" style="display:none">
-            <div class="note" style="color:var(--ink);margin-top:16px"><b>Or install it once.</b></div>
-            <ol class="steps">
-              <li><a id="zipdl" href="helper/webmc-helper.zip" download>Download webmc-helper.zip</a> and double-click it.</li>
-              <li>Double-click <code>webmc-helper.command</code>: it installs itself and starts at every login.</li>
-              <li>Come back and press PLAY.</li>
-            </ol>
-            <div class="note">Already running? <a href="#" id="openlocal">Open the helper's page</a>.</div>
+            <div class="note" style="color:var(--ink);margin-top:16px"><b>Start it once — no terminal,
+              no typing.</b> On a Mac, download this and double-click it in Downloads, and you are done:
+              it installs two small files and one login item, so from then on it is simply always there.
+              It comes back by itself if it ever stops, and <b>Leave nothing</b> removes all of it again.</div>
+            <div style="margin-top:12px;display:flex;gap:11px;flex-wrap:wrap;align-items:center">
+              <a id="appdl" href="helper/WebMC-Helper-mac.zip" download
+                 style="display:inline-flex;align-items:center;gap:9px;padding:12px 18px;border-radius:12px;
+                        background:linear-gradient(135deg,var(--mint),var(--cyan));color:#04140c;
+                        font-weight:650">Download WebMC Helper (macOS)</a>
+              <span class="note">Then double-click what lands in Downloads.</span>
+            </div>
+            <details style="margin-top:14px">
+              <summary class="note" style="cursor:pointer">Windows, Linux, or you would rather see the pieces</summary>
+              <ol class="steps">
+                <li><a id="zipdl" href="helper/webmc-helper.zip" download>Download webmc-helper.zip</a> and
+                  double-click it.</li>
+                <li>Double-click <code>webmc-helper.command</code>: it installs itself and starts at every
+                  login. This one does open a Terminal window while it works.</li>
+                <li>Come back and press PLAY.</li>
+              </ol>
+            </details>
+            <div class="note" style="margin-top:10px">Already running?
+              <a href="#" id="openlocal">Open the helper's page</a>.</div>
           </div>
         </div>
       </div>
@@ -1622,6 +1638,7 @@ $("openlocal2").onclick = (e) => { e.preventDefault(); window.open("http://127.0
   $("helper").value = state.helper || "http://127.0.0.1:7645";
   if (hosted){
     $("zipdl").href = "helper/webmc-helper.zip";
+    if ($("appdl")) $("appdl").href = "helper/WebMC-Helper-mac.zip";
     $("openlocal2").style.display = "";
     $("stay").style.display = "";
   }

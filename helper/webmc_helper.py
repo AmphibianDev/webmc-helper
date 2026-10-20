@@ -4162,6 +4162,17 @@ def main(argv=None):
     if not cfg.root:
         cfg.root = default_root()
     cfg.root = os.path.abspath(os.path.expanduser(cfg.root))
+
+    # The helper's own root is a sandbox like any other, and it has to carry the same note: without
+    # one, every restart left another directory behind that nothing could identify as ours to remove.
+    try:
+        os.makedirs(cfg.root, exist_ok=True)
+        with open(os.path.join(cfg.root, "owner.json"), "w") as fh:
+            json.dump({"pid": os.getpid(), "started": time.time(), "helper": VERSION,
+                       "argv": sys.argv[1:], "boot": _boot_id(), "role": "helper root"}, fh, indent=1)
+    except OSError:
+        pass
+
     install_signal_handlers()
 
     # The single-file .command writes the helper out of a heredoc to a temp file. Once python has
