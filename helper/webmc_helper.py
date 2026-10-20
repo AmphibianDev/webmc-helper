@@ -2096,7 +2096,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "proxy": self.server.curl.proxy or "direct",
                 "relay": (s.cfg.relay if s else reg.cfg.relay) or None,
                 "downloads": self.server.curl.bytes_in,
-                "autocleanSeconds": s.cfg.autoclean,
+                "autocleanSeconds": (s.cfg.autoclean if s else reg.cfg.autoclean),
                 "features": ["fabric", "real-jvm", "opfs-bundle", "restore", "modrinth",
                              "local-mods", "mod-search", "audit"],
             })
