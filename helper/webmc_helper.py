@@ -4348,7 +4348,11 @@ def main(argv=None):
         # Only ever remove a directory this helper's own launcher made: a direct child of a temp
         # directory, named webmc.<something>. The first version of this checked for a "/tmp/" prefix
         # and therefore never fired on macOS, where the staging directory is under /var/folders.
-        remove_staging = bool(here and os.path.basename(here).startswith("webmc.")
+        # webmc.XXXXXX is what mktemp makes; webmc-app.XXXXXX is what the double-clickable app makes
+        # before it hands the job over. Both are ours, and both should go when this helper goes.
+        staging_name = os.path.basename(here) if here else ""
+        remove_staging = bool(here and (staging_name.startswith("webmc.")
+                                        or staging_name.startswith("webmc-app."))
                               and os.path.dirname(here) in tempdirs and os.path.isdir(here))
         if remove_staging:
             size = 0
