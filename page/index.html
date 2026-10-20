@@ -463,7 +463,11 @@
           for it: WebAssembly and an in-page JVM are sandboxed, <code>file://</code> gives an opaque origin
           that cannot even reach <code>127.0.0.1</code>, a custom protocol handler and a browser extension
           both need an installer first, and a page has never been allowed to run a file it downloaded.</p>
-        <p>Local Network Access, in current Chromium, makes the boundary explicit. Measured from this
+        <p>Two names are worth knowing on a managed machine: the permission is called <b>Local
+          Network Access</b> in Chromium's site settings, and one policy refuses it outright —
+          <code>LocalNetworkAccessBlockedForUrls</code>. Where that policy is set, nothing on a page
+          can reach a local helper at all, and the helper's own page is the only route left.</p>
+        <p>Local Network Access, in current Chromium, makes the boundary explicit.
           launcher on GitHub Pages to the helper on <code>127.0.0.1</code>: <code>fetch()</code> is refused
           or prompts for permission, an <code>&lt;iframe&gt;</code> comes back with no child frame at all,
           and a top-level navigation is <b>allowed</b> with no prompt. That last row is why the hosted page
@@ -838,7 +842,10 @@ async function loadVersions(){
       const o = document.createElement("option"); o.value = id; o.textContent = id;
       sel.appendChild(o);
     }
-    sel.value = [...sel.options].some(o => o.value === want) ? want : (sel.options[0] || {}).value;
+      sel.value = [...sel.options].some(o => o.value === want) ? want : (sel.options[0] || {}).value;
+      versionsLoaded = true;
+      if (typeof buildVersionList === "function") buildVersionList();
+      if (typeof updateFacts === "function") updateFacts();
     versionsLoaded = true;
   } catch (e){
     sel.innerHTML = '<option value="1.21.11">1.21.11 (the list could not be read)</option>';
