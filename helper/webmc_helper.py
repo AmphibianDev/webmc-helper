@@ -2207,10 +2207,49 @@ class Session:
         if getattr(self.cfg, "relay", None):
             # Everything downloaded this session goes through the relay instead of straight to
             # Mojang - which is the point of it on a network that blocks Mojang.
-            self.curl.relay = self.cfg.relay
-            self.log("relay: every download goes through %s" % self.cfg.relay)
+            # Measured on a filtered network: straight through a local proxy is 0.88 MB/s; the same file
+            # via the relay (proxy -> Cloudflare -> Mojang) is 0.41 MB/s. So the proxy wins when there is
+            # one and the relay is for when there is not - which is the case it was built for. Both
+            # resolve names outside this machine; only one of them spends a second hop doing it.
+            if self.cfg.proxy and self._proxy_can_fetch():
+                self.curl.proxy = self.cfg.proxy
+                self.curl.relay = None
+                self.log("downloads: straight through %s, about twice as fast as the relay" % self.cfg.proxy)
+            else:
+                self.curl.relay = self.cfg.relay
+                self.log("relay: every download goes through %s" % self.cfg.relay)
+        elif self.cfg.proxy:
+            # No relay needed, but a proxy is here: say so once, so the log answers "how is this
+            # being fetched?" without anybody having to guess.
+            self.log("downloads: straight through %s" % self.cfg.proxy)
         self._write_owner()
         self._link_cache()
+
+    def _proxy_can_fetch(self):
+        """Can this proxy actually fetch from Mojang? One small request answers it.
+
+        A proxy that resolves names locally is no use on a poisoned network, and a
+        configured-but-broken proxy is worse than none - so this is asked, not assumed.
+        """
+        if getattr(self, "_proxy_checked", None) is not None:
+            return self._proxy_checked
+        self._proxy_checked = False
+        saved, self.curl.proxy = self.curl.proxy, self.cfg.proxy
+        try:
+            started = time.time()
+            text = self.curl.get("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json",
+                                 timeout=25)
+            data = json.loads(text if isinstance(text, str) else text.decode("utf-8", "replace"))
+            if data.get("versions"):
+                self._proxy_checked = True
+                self.log("proxy: %s fetched Mojang's version list in %.1fs, so downloads use it"
+                         % (self.cfg.proxy, time.time() - started))
+        except Exception as exc:  # noqa: BLE001
+            self.log("proxy: %s could not fetch from Mojang (%s) - downloads will use the relay"
+                     % (self.cfg.proxy, str(exc)[:60]))
+        finally:
+            self.curl.proxy = saved
+        return self._proxy_checked
 
     def _write_owner(self):
         """A note to whoever finds this directory later: who made it, and when.
@@ -3343,6 +3382,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "tunnelServer": body.get("tunnelServer"),
                 "tunnelPort": body.get("tunnelPort"),
                 "tunnelEverything": bool(body.get("tunnelEverything")),
+                "cache": bool(body.get("cache")),
                 "restricted": bool(body.get("restricted")),
                 "mods": body.get("mods") or [],
                 "username": body.get("username") or "Player",
