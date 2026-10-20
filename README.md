@@ -273,9 +273,16 @@ and boring:
 * **No online-mode login.** Offline usernames only; premium servers will reject the join.
 ## The relay, if a network blocks things
 
-Optional, one deployment, and it is the difference between "the game will not download" and a normal
-session on a network that blocks Mojang or game ports. It is a Cloudflare Worker: it fetches from
-Cloudflare's network instead of yours, and it dials a Minecraft server on your behalf.
+Optional, and the difference between "the game will not download" and a normal session on a network
+that blocks Mojang or game ports. It is a Cloudflare Worker: it fetches from Cloudflare's network
+instead of yours, and it dials a Minecraft server on your behalf.
+
+**You only deploy one if you want your own.** The helper has a built-in relay list (`DEFAULT_RELAYS`
+in `webmc_helper.py`), probed once per run, used when the page does not name a relay, and skipped the
+moment one is unreachable — so a normal network downloads directly and never notices. Put a deployed
+URL in that tuple and everyone using this helper gets it: nobody else has to deploy, log in or
+configure anything. The page's **Relay** setting is then just a choice of *Automatic* (whatever the
+helper has), *Never*, or *My own relay*.
 
 ```bash
 cd webmc-helper

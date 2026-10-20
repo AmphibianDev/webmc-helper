@@ -112,6 +112,51 @@ RELAY_PREFIXES = (
 )
 
 
+# The relays this helper will use when the page (or the command line) does not name one. Deploying a
+# Worker once and putting its URL here is what turns "everybody deploys their own" into "it works".
+# Order matters: the first that answers /health wins, so list a spare. An empty tuple means the
+# helper simply downloads directly, which is what most networks want anyway.
+DEFAULT_RELAYS = (
+)
+
+_RELAY_CHOICE = {"probed": False, "url": None}
+OFF = ("off", "none", "no", "direct", "-")
+
+
+def relay_reachable(url, timeout=5):
+    """Does this relay answer /health? Cheap, and it is the only thing that decides."""
+    try:
+        request = urllib.request.Request(url.rstrip("/") + "/health",
+                                        headers={"User-Agent": "webmc-helper"})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status == 200
+    except Exception:
+        return False
+
+
+def resolve_relay(requested, log=None, timeout=5):
+    """Decide which relay to use. "off" means none, a URL means that one, and nothing means the
+    built-in list — probed once per helper, so a launch never pays for it twice."""
+    if requested and str(requested).strip().lower() in OFF:
+        return None
+    if requested and str(requested).strip():
+        return str(requested).strip().rstrip("/")
+    if _RELAY_CHOICE["probed"]:
+        return _RELAY_CHOICE["url"]
+    _RELAY_CHOICE["probed"] = True
+    for candidate in DEFAULT_RELAYS:
+        if relay_reachable(candidate, timeout=timeout):
+            _RELAY_CHOICE["url"] = candidate.rstrip("/")
+            if log:
+                log("relay: using the built-in relay %s (say \"off\" to download directly)"
+                    % _RELAY_CHOICE["url"])
+            return _RELAY_CHOICE["url"]
+    if DEFAULT_RELAYS and log:
+        log("relay: none of the %d built-in relays answered; downloading directly"
+            % len(DEFAULT_RELAYS))
+    return None
+
+
 def relayed(url, relay):
     """Rewrite an upstream URL to go through the relay, if one is configured."""
     if not relay:
@@ -591,6 +636,9 @@ class Registry:
     def __init__(self, cfg, curl, log=print):
         self.cfg = cfg
         self.curl = curl
+        # Six places in here log through the relay (the SOCKS proxy opening a connection, the
+        # tunnel coming up); without this they raised instead of logging.
+        self.log = log
         self.lock = threading.RLock()
         self.sessions = {}
         self.order = []
@@ -609,8 +657,10 @@ class Registry:
         root = os.path.join("/tmp", "webmc-%s" % secrets.token_hex(4))
         cfg = argparse.Namespace(**vars(self.cfg))
         cfg.root = root
-        if opts.get("relay"):
-            cfg.relay = opts["relay"]
+        requested = opts.get("relay")
+        if requested is None:
+            requested = getattr(self.cfg, "relay", None)
+        cfg.relay = resolve_relay(requested, log=self.log)
         if opts.get("restricted"):
             cfg.restricted = True
         if opts.get("tunnelEverything"):
@@ -2725,6 +2775,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                   if os.path.isdir(reg.store) else 0},
                 "proxy": self.server.curl.proxy or "direct",
                 "relay": (s.cfg.relay if s else reg.cfg.relay) or None,
+                "relayBuiltIn": len(DEFAULT_RELAYS),
+                "relayMode": ("custom" if (s.cfg.relay if s else reg.cfg.relay)
+                              and (s.cfg.relay if s else reg.cfg.relay) not in DEFAULT_RELAYS
+                              else "auto" if (s.cfg.relay if s else reg.cfg.relay) else "off"),
                 "downloads": self.server.curl.bytes_in,
                 "autocleanSeconds": (s.cfg.autoclean if s else reg.cfg.autoclean),
                 "features": ["fabric", "real-jvm", "opfs-bundle", "restore", "modrinth",
@@ -3397,7 +3451,9 @@ def parse_args(argv):
                          " present but blocked, or policies watch what runs)")
     ap.add_argument("--relay", default=os.environ.get("WEBMC_RELAY") or None, metavar="URL",
                     help="fetch everything through this relay instead of directly (the Cloudflare "
-                         "Worker in relay/ does this), for networks where Mojang is blocked")
+                         "Worker in relay/ does this), for networks where Mojang is blocked. "
+                         "\"auto\" (the default) uses the built-in relay when there is one, and "
+                         "\"off\" never uses one")
     ap.add_argument("--no-jre-download", action="store_true",
                     help="never fetch a JRE; fail instead")
     ap.add_argument("--keep", action="store_true",

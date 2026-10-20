@@ -455,19 +455,30 @@
           a server).
         </p>
         <div class="cols3">
-          <div><label for="relay">Relay address</label>
-            <input id="relay" placeholder="https://webmc-relay.you.workers.dev" /></div>
+          <div><label for="relayMode">Relay</label>
+            <select id="relayMode">
+              <option value="auto" selected>Automatic — use the built-in one if there is one</option>
+              <option value="off">Never — always connect directly</option>
+              <option value="custom">My own relay…</option>
+            </select></div>
           <div><label for="server">Join this server straight away (optional)</label>
             <input id="server" placeholder="play.example.net:25565" /></div>
           <div><label>&nbsp;</label>
             <button id="relayTest" style="width:100%">Test the relay</button></div>
         </div>
-        <div class="hint" id="relayState" style="margin-top:10px"></div>
+        <div id="relayCustomRow" style="display:none;margin-top:14px">
+          <label for="relay">Your relay's address</label>
+          <input id="relay" placeholder="https://webmc-relay.you.workers.dev" />
+        </div>
+        <div class="hint" id="relayInUse" style="margin-top:11px"></div>
+        <div class="hint" id="relayState" style="margin-top:6px"></div>
         <div class="hint" style="margin-top:10px">
-          Deploy it once with
+          <b>Most people never touch this.</b> On Automatic the launcher uses its own relay when
+          your network needs one and connects directly when it does not — and a relay serves
+          downloads, the game's own connections and the server below, so it is one setting, not
+          three. Choose <b>My own relay</b> to use yours instead: deploy it once with
           <code>npx wrangler deploy relay/relay.js --name webmc-relay --compatibility-date 2026-01-01</code>,
-          paste the URL, and it is used for everything here — downloads, the game's own connections
-          and the server below. No other setting is needed. Check it from the blocked network with
+          paste the URL, and verify it from the blocked network with
           <code>python3 relay/test-relay.py YOUR-URL</code>.
         </div>
         <label class="check" style="margin-top:16px">
@@ -615,8 +626,11 @@
             <td>The helper detects a SOCKS5 proxy on <code>127.0.0.1</code> (1080, 1088, 10808, 7890) and
               uses it, resolving names at the proxy, or takes <code>--proxy socks5h://host:port</code>.</td></tr>
           <tr><td>Mojang is unreachable</td>
-            <td>The relay in <b>Settings</b>: every download goes through it over ordinary HTTPS and is
-              cached at the edge.</td></tr>
+            <td><b>Automatic.</b> The launcher's own relay fetches for you over ordinary HTTPS, from
+              Cloudflare instead of from this machine, and caches what it fetched at the edge. A
+              network that blocks Mojang is exactly what it exists for, so nobody has to deploy
+              anything. <b>Settings → Relay → My own relay</b> points it at one you deployed instead,
+              and <b>Never</b> turns it off.</td></tr>
           <tr><td>Java is not installed, or the machine's Java is blocked</td>
             <td><b>Advanced: restricted mode</b> — a runtime fetched into the session's folder, using
               nothing the machine has. It does <b>not</b> get past a policy that blocks unknown
@@ -1284,7 +1298,7 @@ async function launch(){
       username: $("username").value.trim() || "Player",
       memory: $("memory").value.trim() || "2G",
       assets: $("assets").value === "1",
-      relay: $("relay").value.trim() || null,
+      relay: relayChoice(),
       tunnelServer: $("server").value.trim() || null,
       tunnelEverything: $("proxyAll").checked,
       restricted: $("restricted").checked,
@@ -1316,6 +1330,7 @@ async function updateFacts(){
   if ($("factSandboxSub")) $("factSandboxSub").textContent = "deleted when the session ends";
   if ($("factStorage")) $("factStorage").textContent = fmt(est.used);
   if ($("factStorageSub")) $("factStorageSub").textContent = Store.kind + " in this browser";
+  if (typeof showRelayInUse === "function") showRelayInUse();
   if ($("factSessions")) $("factSessions").textContent = (state.sessions || []).length
     ? (state.sessions || []).length + " this visit" : "none yet";
 }
@@ -1421,22 +1436,69 @@ $("copyline").onclick = async () => {
   try { await navigator.clipboard.writeText(SHELL_LINE); $("copyok").textContent = "copied"; }
   catch (e){ $("copyok").textContent = "select it and copy by hand"; }
 };
+// One relay setting, three honest meanings: automatic (the helper decides, and it knows about the
+// built-in relays), never, or a URL of your own.
+function relayChoice(){
+  const mode = $("relayMode").value;
+  if (mode === "off") return "off";
+  if (mode === "custom") return $("relay").value.trim() || null;
+  return null;                        // the helper resolves it, probing the built-in list
+}
+function relayModeChanged(){
+  const custom = $("relayMode").value === "custom";
+  $("relayCustomRow").style.display = custom ? "block" : "none";
+  keep("relayMode");
+  showRelayInUse();
+}
+function showRelayInUse(){
+  const el = $("relayInUse");
+  if (!el) return;
+  const h = state.hello || {};
+  const mode = $("relayMode").value;
+  if (mode === "off"){ el.textContent = "Set to connect directly: no relay is used at all."; return; }
+  if (h.relay) el.textContent = "The helper is downloading through " + h.relay + ".";
+  else if (h.relayBuiltIn)
+    el.textContent = "No relay needed yet — " + h.relayBuiltIn +
+                     " built-in one(s) are there if this network blocks Mojang or a game port.";
+  else if (mode === "custom" && $("relay").value.trim())
+    el.textContent = "Your relay is used for the next launch.";
+  else el.textContent = "Downloads go straight to Mojang, which is right unless your network blocks it.";
+}
+function relayUrlToTest(){
+  const mode = $("relayMode").value;
+  if (mode === "custom") return $("relay").value.trim().replace(/\/$/, "");
+  if (mode === "off") return "";
+  const h = state.hello || {};
+  return h.relay ? String(h.relay).replace(/\/$/, "") : "";
+}
 $("relayTest").onclick = async () => {
-  const url = $("relay").value.trim().replace(/\/$/, "");
-  const state = $("relayState");
-  if (!url){ state.textContent = "paste a URL first"; return; }
-  state.textContent = "asking it…";
+  const line = $("relayState");
+  const url = relayUrlToTest();
+  if ($("relayMode").value === "off"){
+    line.textContent = "this is set to connect directly, so there is nothing to test";
+    return;
+  }
+  if (!url){
+    line.textContent = "no relay to test yet: the helper has not reported one. Start a session on a "
+                     + "blocked network, or choose “My own relay” and paste its address.";
+    return;
+  }
+  line.textContent = "asking " + url + "…";
   try {
     const r = await fetch(url + "/health", { cache:"no-store" });
     const j = await r.json();
-    state.textContent = j && j.ok ? "it answers, and knows " + (j.prefixes || []).length + " hosts"
-                                  : "it answered something unexpected";
+    const hosts = (j.files || j.prefixes || []).length;
+    line.textContent = j && j.ok
+      ? "it answers" + (hosts ? ", and knows " + hosts + " hosts" : "") +
+        (j.tunnel ? ", and carries game connections" : "") + "."
+      : "it answered something unexpected";
     keep("relay");
   } catch (e){
-    state.textContent = "no answer from it (is the URL right, and is it deployed?)";
+    line.textContent = "no answer from it (is the URL right, and is it deployed?)";
   }
 };
-$("relay").addEventListener("change", () => keep("relay"));
+$("relayMode").addEventListener("change", relayModeChanged);
+$("relay").addEventListener("change", () => { keep("relay"); showRelayInUse(); });
 $("server").addEventListener("change", () => keep("server"));
 function keep(key){
   try { localStorage.setItem(LS + key, $(key).value.trim()); } catch(e){}
@@ -1513,6 +1575,8 @@ $("openlocal2").onclick = (e) => { e.preventDefault(); window.open("http://127.0
   renderMods();
   try {
     $("relay").value = localStorage.getItem(LS + "relay") || "";
+    $("relayMode").value = localStorage.getItem(LS + "relayMode") || "auto";
+    $("relayCustomRow").style.display = $("relayMode").value === "custom" ? "block" : "none";
     $("server").value = localStorage.getItem(LS + "server") || "";
     const fx = localStorage.getItem(LS + "fx") || "fx-glow";
     const motion = localStorage.getItem(LS + "motion") || "follow";
