@@ -72,6 +72,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+import urllib.request
 import uuid as uuidlib
 import zipfile
 
@@ -600,7 +601,7 @@ class Registry:
         self.started = time.time()
         self.last_touch = self.started
         self.store = session_store_dir(cfg)
-        if not getattr(cfg, "no_store", False):
+        if getattr(cfg, "store_sessions", False):
             os.makedirs(self.store, exist_ok=True)
 
     def launch(self, opts):
@@ -610,6 +611,10 @@ class Registry:
         cfg.root = root
         if opts.get("relay"):
             cfg.relay = opts["relay"]
+        if opts.get("restricted"):
+            cfg.restricted = True
+        if opts.get("tunnelEverything"):
+            cfg.proxy_game = True
         session = Session(cfg, self.curl, manager=self, sid=sid)
         session.pending_restore = self.pending_restore
         if session.pending_restore:
@@ -641,7 +646,7 @@ class Registry:
     def store_session(self, session):
         """Copy a finished session's bundle where the *next* launch can find it, whichever origin
         started this one."""
-        if getattr(self.cfg, "no_store", False) or not session.result:
+        if not getattr(self.cfg, "store_sessions", False) or not session.result:
             return None
         if not os.path.exists(session.bundle_path):
             return None
@@ -673,7 +678,7 @@ class Registry:
 
     def newest_stored(self, version):
         """The most recent kept session for a version, for a launch that has nothing from the page."""
-        if getattr(self.cfg, "no_store", False):
+        if not getattr(self.cfg, "store_sessions", False):
             return None
         try:
             candidates = [os.path.join(self.store, n) for n in os.listdir(self.store)
@@ -863,6 +868,195 @@ def _ws_lock_for(sock):
         return lock
 
 
+def bridge(client, relay, host, port, log, on_open=None, timeout=120):
+    """Carry one TCP connection through the relay: the piece both the tunnel and the SOCKS proxy need.
+
+    Returns True once the relay said it was ready, False if it could not be reached at all.
+    """
+    relay_host = relay.rstrip("/")
+    try:
+        body = json.dumps({"host": host, "port": int(port)}).encode()
+        req = urllib.request.Request(
+            relay_host.replace("ws://", "http://").replace("wss://", "https://") + "/v1/token",
+            data=body, headers={"Content-Type": "application/json",
+                                "User-Agent": "%s/%s" % (NAME, VERSION)})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            token = json.loads(response.read().decode("utf-8", "replace")).get("token")
+        if not token:
+            raise WebSocketError("the relay did not issue a token")
+        ws_url = relay_host.replace("https://", "wss://").replace("http://", "ws://") + "/v1/connect"
+        sock = ws_connect(ws_url)
+        ws_send(sock, json.dumps({"t": "open", "v": 1, "token": token, "host": host,
+                                  "port": int(port)}).encode(), opcode=1)
+        for _ in range(20):
+            opcode, payload = ws_recv(sock)
+            if opcode == 9:
+                ws_send(sock, payload, opcode=10)
+                continue
+            if opcode == 8:
+                raise WebSocketError("the relay closed the connection")
+            if opcode != 1:
+                continue
+            message = json.loads(payload.decode("utf-8", "replace"))
+            if message.get("t") == "ready":
+                break
+            if message.get("t") == "error":
+                raise WebSocketError(message.get("message") or message.get("code") or "refused")
+        else:
+            raise WebSocketError("the relay never said it was ready")
+    except Exception as exc:  # noqa: BLE001
+        log("relay: %s:%s could not be reached: %s" % (host, port, exc))
+        try:
+            client.close()
+        except Exception:
+            pass
+        return False
+
+    if on_open:
+        on_open()
+    stop = threading.Event()
+
+    def to_relay():
+        try:
+            while not stop.is_set():
+                data = client.recv(32768)
+                if not data:
+                    break
+                ws_send(sock, data)
+        except Exception:
+            pass
+        finally:
+            stop.set()
+            try:
+                ws_send(sock, b"", opcode=8)
+            except Exception:
+                pass
+
+    threading.Thread(target=to_relay, daemon=True).start()
+    received = 0
+    try:
+        while not stop.is_set():
+            opcode, payload = ws_recv(sock, timeout=timeout)
+            if opcode in (2, 0):
+                client.sendall(payload)
+                # flow control is cumulative: the relay replaces its counter with this number
+                received += len(payload)
+                try:
+                    ws_send(sock, json.dumps({"t": "ack", "n": received}).encode(), opcode=1)
+                except Exception:
+                    pass
+            elif opcode == 1:
+                message = json.loads(payload.decode("utf-8", "replace"))
+                if message.get("t") == "ping":
+                    ws_send(sock, json.dumps({"t": "pong", "id": message.get("id")}).encode(), 1)
+                elif message.get("t") in ("end", "error"):
+                    break
+            elif opcode == 9:
+                ws_send(sock, payload, opcode=10)
+            elif opcode == 8:
+                break
+    except Exception:
+        pass
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+    return True
+
+
+class SocksBridge:
+    """A local SOCKS5 proxy whose connections are carried by the relay.
+
+    This is the setting for a network that blocks everything but HTTPS: Java routes *every* TCP
+    connection a program makes through `-DsocksProxyHost`, so pointing the game at this proxy is what
+    makes joining a server, authenticating and fetching skins work - not just one server chosen in
+    advance. It needs no administrator and touches nothing outside the session.
+    """
+
+    def __init__(self, relay, port=0, log=print):
+        self.relay = relay
+        self.port = int(port or 0)
+        self.log = log
+        self.server = None
+        self.thread = None
+        self.running = False
+        self.connections = 0
+
+    def start(self):
+        self.server = socket.socket()
+        self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server.bind(("127.0.0.1", self.port))
+        self.server.listen(16)
+        self.port = self.server.getsockname()[1]
+        self.running = True
+
+        def accept():
+            while self.running:
+                try:
+                    client, _addr = self.server.accept()
+                except OSError:
+                    break
+                threading.Thread(target=self._handle, args=(client,), daemon=True).start()
+
+        self.thread = threading.Thread(target=accept, daemon=True)
+        self.thread.start()
+        self.log("proxy: SOCKS5 on 127.0.0.1:%d, every connection carried by %s"
+                 % (self.port, self.relay))
+        return self.port
+
+    def stop(self):
+        self.running = False
+        try:
+            if self.server:
+                self.server.close()
+        except Exception:
+            pass
+
+    def _handle(self, client):
+        try:
+            greeting = client.recv(2)
+            if len(greeting) < 2 or greeting[0] != 5:
+                client.close()
+                return
+            methods = client.recv(greeting[1])
+            if 0 not in methods:
+                client.sendall(b"\x05\xff")      # no acceptable method
+                client.close()
+                return
+            client.sendall(b"\x05\x00")           # no authentication
+            head = client.recv(4)
+            if len(head) < 4 or head[0] != 5 or head[1] != 1:
+                client.close()
+                return
+            kind = head[3]
+            if kind == 1:
+                host = socket.inet_ntoa(client.recv(4))
+            elif kind == 3:
+                length = client.recv(1)[0]
+                host = client.recv(length).decode("utf-8", "replace")
+            elif kind == 4:
+                host = socket.inet_ntop(socket.AF_INET6, client.recv(16))
+            else:
+                client.close()
+                return
+            port = struct.unpack("!H", client.recv(2))[0]
+            # the relay does the dialling, so "success" is the relay's answer, not ours
+            ok = bridge(client, self.relay, host, port, self.log,
+                        on_open=lambda: self._count(host, port))
+            if not ok:
+                client.sendall(b"\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00")
+        except Exception:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+    def _count(self, host, port):
+        self.connections += 1
+        self.log("proxy: %s:%s is open through the relay" % (host, port))
+
+
 class Tunnel:
     """One Minecraft server, reachable at 127.0.0.1:<local port> through a relay.
 
@@ -897,6 +1091,13 @@ class Tunnel:
 
     def _pump(self, client):
         """One game connection: open a relay socket, then copy bytes both ways."""
+        bridge(client, self.relay, self.host, self.port, self.log, on_open=self._opened)
+
+    def _opened(self):
+        self.connections += 1
+        self.log("tunnel: %s:%d is open through the relay" % (self.host, self.port))
+
+    def _pump_unused(self, client):
         try:
             token = self._token()
             ws_url = (self.relay.replace("https://", "wss://").replace("http://", "ws://")
@@ -1048,6 +1249,7 @@ class Session:
         self.last_touch = time.time()
         self.pending_mods = []      # jars the page pushed in, waiting for a launch
         self.tunnel = None          # a server carried to us through a relay, when asked for
+        self.socks = None           # a local SOCKS5 proxy the game itself is pointed at
         self.quick_play = None      # 127.0.0.1:<port>, handed to the client to join
         self.java = None
         self.java_major = 0
@@ -1271,7 +1473,16 @@ class Session:
 
             # ---- java
             self._phase("java", "looking for a Java runtime")
-            java, major = pick_java(required, explicit=self.cfg.java, log=self.log)
+            if getattr(self.cfg, "restricted", False):
+                # Restricted mode: never touch a Java the machine already has. The runtime comes
+                # into the sandbox and dies with it, so nothing outside /tmp is read or run.
+                self.log("restricted mode: a Java runtime will be fetched into the sandbox "
+                         "rather than used from this machine")
+                java, major = None, 0
+                if self.cfg.java and java_major(self.cfg.java):
+                    java, major = self.cfg.java, java_major(self.cfg.java)
+            else:
+                java, major = pick_java(required, explicit=self.cfg.java, log=self.log)
             if not java or major < required:
                 if self.cfg.no_jre_download:
                     raise RuntimeError(
@@ -1311,6 +1522,18 @@ class Session:
             local = list(self.cfg.mod_jar or []) + list(opts.get("localMods") or [])
             local += self._pending_mod_paths()
             mods += self._local_mods(local)
+
+            # ---- everything the game connects to, through the relay
+            if opts.get("tunnelEverything") or self.cfg.proxy_game:
+                if not self.cfg.relay:
+                    self.log("a proxy needs a relay URL (Settings → Proxy), so it is off")
+                else:
+                    try:
+                        self.socks = SocksBridge(self.cfg.relay, log=self.log)
+                        self.socks_port = self.socks.start()
+                    except Exception as exc:  # noqa: BLE001
+                        self.log("could not start the proxy: %s" % exc)
+                        self.socks = None
 
             # ---- a server through the relay, if one was asked for
             server = (opts.get("tunnelServer") or "").strip()
@@ -2023,6 +2246,11 @@ class Session:
             "quickPlayRealms": "",
         }
         cmd = [self.java, "-Xmx%s" % memory]
+        if getattr(self, "socks", None):
+            # Java routes every TCP connection a program makes through these, so the game's own
+            # multiplayer, authentication and skin fetching all travel inside the relay
+            cmd += ["-DsocksProxyHost=127.0.0.1", "-DsocksProxyPort=%d" % self.socks_port,
+                    "-Djava.net.useSystemProxies=false"]
         if os_name() == "osx":
             cmd += ["-Dapple.awt.application.appearance=system"]
         cmd += ["-Dfabric.gameJarPath=%s" % client_jar]
@@ -2117,6 +2345,12 @@ class Session:
 
 
     def _stop_tunnel(self):
+        if getattr(self, "socks", None):
+            try:
+                self.socks.stop()
+            except Exception:
+                pass
+            self.socks = None
         if self.tunnel:
             try:
                 self.tunnel.stop()
@@ -2578,6 +2812,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "relay": body.get("relay") or self.server.registry.cfg.relay,
                 "tunnelServer": body.get("tunnelServer"),
                 "tunnelPort": body.get("tunnelPort"),
+                "tunnelEverything": bool(body.get("tunnelEverything")),
+                "restricted": bool(body.get("restricted")),
                 "mods": body.get("mods") or [],
                 "username": body.get("username") or "Player",
                 "memory": body.get("memory") or DEFAULT_MEMORY,
@@ -3151,6 +3387,14 @@ def parse_args(argv):
     ap.add_argument("--java", default=None, help="java executable to use")
     ap.add_argument("--proxy", default=None,
                     help="SOCKS/HTTP proxy for downloads, or 'none' (default: auto)")
+    ap.add_argument("--proxy-game", action="store_true",
+                    help="also send the game's own connections through the relay: a local SOCKS5"
+                         " proxy, with the JVM pointed at it, so servers, sign-in and skins work"
+                         " on a network that blocks everything but HTTPS")
+    ap.add_argument("--restricted", action="store_true",
+                    help="restricted mode: use only the Java runtime in the sandbox, never a"
+                         " system one, and never look outside /tmp (for machines where Java is"
+                         " present but blocked, or policies watch what runs)")
     ap.add_argument("--relay", default=os.environ.get("WEBMC_RELAY") or None, metavar="URL",
                     help="fetch everything through this relay instead of directly (the Cloudflare "
                          "Worker in relay/ does this), for networks where Mojang is blocked")
@@ -3205,12 +3449,13 @@ def parse_args(argv):
     ap.add_argument("--audit-clean", action="store_true",
                     help="with --audit: remove every leftover (never a running session)")
     ap.add_argument("--store", default=os.environ.get("WEBMC_STORE") or None, metavar="DIR",
-                    help="where finished sessions are kept so the next launch starts from them "
-                         "(default: a webmc/sessions folder in your application data)")
+                    help="where finished sessions are kept, when keeping them is asked for "
+                         "(off by default: a session belongs in the browser, and the helper "
+                         "deletes the rest)")
     ap.add_argument("--keep-sessions", type=int, default=5, metavar="N",
-                    help="how many finished sessions to keep (default 5)")
-    ap.add_argument("--no-store", action="store_true",
-                    help="keep nothing between sessions: every launch starts from a clean sandbox")
+                    help="how many finished sessions to keep, when a store is in use")
+    ap.add_argument("--store-sessions", action="store_true",
+                    help="keep finished sessions on disk too (the browser is the only place one is kept otherwise)")
     ap.add_argument("--forget-sessions", action="store_true",
                     help="delete the kept sessions (your worlds and options) and exit")
     ap.add_argument("--idle-exit", type=int, default=0, metavar="SECONDS",
@@ -3326,7 +3571,13 @@ def main(argv=None):
     sweep_stale_sandboxes(keep=cfg.root)
 
     curl = Curl()
-    proxy = detect_proxy(args.proxy, lambda m: print("  " + m))
+    if args.restricted and not args.proxy:
+        # in restricted mode even the proxy hunt is skipped: it is a network probe of the local
+        # machine, and someone asking for this wants as little of that as possible
+        proxy = None
+        print("  restricted mode: not probing for a local proxy")
+    else:
+        proxy = detect_proxy(args.proxy, lambda m: print("  " + m))
     curl.proxy = proxy
     if not proxy:
         print("  proxy: none (using the network directly)")
@@ -3394,6 +3645,8 @@ def main(argv=None):
             "loader": args.loader,
             "loaderKind": args.loader_kind,
             "relay": args.relay,
+            "tunnelEverything": args.proxy_game,
+            "restricted": args.restricted,
             "mods": [m.strip() for m in (args.mods or "").split(",") if m.strip()],
             "localMods": list(args.mod_jar or []),
             "username": args.username,

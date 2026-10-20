@@ -37,7 +37,32 @@
   ::-webkit-scrollbar-thumb:hover{background:#4a4b55;background-clip:content-box}
   ::-webkit-scrollbar-track{background:transparent}
 
-  .app{display:grid;grid-template-columns:252px minmax(430px,1fr) var(--logw,420px);height:100vh;
+  /* ------------------------------------------------------------------ background
+     Two soft glows that follow the pointer, painted behind everything. They are transforms on a
+     fixed layer, updated once per animation frame, so the cost is a composited move rather than a
+     repaint of the interface. */
+  .bg{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden;
+      background:radial-gradient(120rem 80rem at 50% -20%, #23262e 0%, #16171a 55%, #121215 100%)}
+  .bg .glow{position:absolute;width:56rem;height:56rem;left:var(--mx,50%);top:var(--my,40%);
+            margin:-28rem 0 0 -28rem;border-radius:50%;filter:blur(10px);opacity:.42;
+            background:radial-gradient(circle at 50% 50%, #4b9e3255, #3a7fd533 45%, transparent 70%);
+            transition:opacity .5s ease}
+  .bg .glow2{position:absolute;width:36rem;height:36rem;left:calc(100% - var(--mx,50%));
+             top:calc(100% - var(--my,60%));margin:-18rem 0 0 -18rem;border-radius:50%;
+             filter:blur(14px);opacity:.30;
+             background:radial-gradient(circle at 50% 50%, #4a90e244, #53ab3422 50%, transparent 72%)}
+  /* the toggleable screen effects */
+  .fx{position:fixed;inset:0;z-index:1;pointer-events:none}
+  body.fx-glow .fx{box-shadow:inset 0 0 200px #000000aa}
+  body.fx-grid .fx{background-image:linear-gradient(#ffffff08 1px, transparent 1px),
+                    linear-gradient(90deg, #ffffff08 1px, transparent 1px);
+                   background-size:34px 34px;
+                   mask-image:radial-gradient(80% 60% at 50% 30%, #000 20%, transparent 75%)}
+  body.fx-scan .fx{background:repeating-linear-gradient(#ffffff06 0 1px, transparent 1px 3px);opacity:.6}
+  body.fx-scan .fx:after{content:"";position:absolute;inset:0;
+    background:linear-gradient(#0000, #ffffff10 45%, #0000);animation:sweep 7s linear infinite}
+  @keyframes sweep{0%{transform:translateY(-60%)}100%{transform:translateY(60%)}}
+  .app{position:relative;z-index:2;display:grid;grid-template-columns:252px minmax(430px,1fr) var(--logw,420px);height:100vh;
        transition:grid-template-columns .18s ease}
   .app.nolog{--logw:0px}
 
@@ -120,6 +145,7 @@
   .chips{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}
   .chip{font-size:11.5px;padding:3px 9px;border-radius:99px;border:1px solid var(--edge);
         color:var(--muted);background:#1a1b1f}
+  .chip.on{color:#d6f3c4;border-color:#3c6b2a;background:#1d2a16}
 
   /* sessions */
   .sessions{display:flex;flex-direction:column;gap:12px}
@@ -220,7 +246,9 @@
   details summary{cursor:pointer;color:var(--muted);font-size:13px}
 </style>
 </head>
-<body>
+<body class="fx-glow">
+<div class="bg" id="bg" aria-hidden="true"><div class="glow"></div><div class="glow2"></div></div>
+<div class="fx" id="fx" aria-hidden="true"></div>
 <div class="app" id="app">
 
   <!-- ------------------------------------------------------------------ rail -->
@@ -280,6 +308,7 @@
             </select>
             <input id="loadercustom" placeholder="e.g. 0.19.5" style="display:none;margin-top:7px" />
             <div class="chips">
+              <span class="chip" id="chipRunning">idle</span>
               <span class="chip" id="chipMods">no mods</span>
               <span class="chip" id="chipMemory">2G</span>
               <span class="chip" id="chipAssets">assets: download</span>
@@ -291,18 +320,6 @@
         </div>
 
         <div class="card">
-          <h3>Join a server <span class="tag">optional</span></h3>
-          <div class="row">
-            <input id="server" placeholder="play.example.net:25565" />
-          </div>
-          <div class="hint" style="margin-top:10px">
-            For networks that block game ports. The helper carries the connection to the relay, which
-            dials the server, and the client joins it as soon as it starts — so you press PLAY and you
-            are in. Needs a relay URL in <b>Settings</b>.
-          </div>
-        </div>
-
-        <div class="card">
           <h3>Progress<span class="spacer"></span><span class="hint" id="pct"></span></h3>
           <div class="bar" id="bar"><i></i></div>
           <div class="hint" style="margin-top:10px"><strong id="phase">Ready</strong>
@@ -310,13 +327,8 @@
           <div class="hint" id="netstat"></div>
         </div>
 
-        <div class="card">
-          <h3>Sessions<span class="spacer"></span>
-            <button class="tiny" id="stopAll">Stop all</button></h3>
-          <div class="sessions" id="sessions"></div>
-          <div class="empty" id="noSessions">Nothing is running. Press PLAY — opening two versions
-            gives you two windows.</div>
-          <div id="notready" style="display:none;margin-top:14px"></div>
+        <div class="card" id="statusCard">
+          <div id="notready" style="display:none"></div>
           <div id="offline" style="display:none;margin-top:14px">
             <div class="bad" id="offlinetext"></div>
             <div id="shortcutbox" style="display:none">
@@ -394,13 +406,6 @@
               <select id="assets">
                 <option value="1" selected>Download them (~430 MB, once a session)</option>
                 <option value="0">Skip — silent and textureless, but fast</option></select></div>
-            <div><label for="relay">Downloads through a relay</label>
-              <input id="relay" placeholder="https://webmc-relay.you.workers.dev" /></div>
-          </div>
-          <div class="hint" style="margin-top:12px">
-            A relay is for networks that block Mojang: the helper fetches every download through it
-            instead. Deploy <code>relay/relay.js</code> to Cloudflare with one command and paste the
-            URL here. Leave it empty to go direct.
           </div>
           <label class="check" style="margin-top:14px">
             <input type="checkbox" id="restore" checked />
@@ -408,6 +413,60 @@
               <span class="hint" style="display:block">Worlds, options and screenshots live in this
                 browser. Nothing is uploaded.</span></span>
           </label>
+        </div>
+
+        <div class="card">
+          <h3>Downloads and the network</h3>
+          <div class="grid2">
+            <div><label for="relay">Relay (Cloudflare Worker)</label>
+              <input id="relay" placeholder="https://webmc-relay.you.workers.dev" /></div>
+            <div><label for="server">Join a server through it (optional)</label>
+              <input id="server" placeholder="play.example.net:25565" /></div>
+          </div>
+          <div class="hint" style="margin-top:11px">
+            One Worker does three things: it fetches Mojang's files for networks that block them, it
+            carries a server connection for networks that block game ports, and — with the switch
+            below — it carries everything the game itself connects to. Deploy
+            <code>relay/relay.js</code> and paste the URL here.
+          </div>
+          <label class="check" style="margin-top:14px">
+            <input type="checkbox" id="proxyAll" />
+            <span>Proxy: send the game through the relay too
+              <span class="hint" style="display:block">Starts a SOCKS5 proxy on this machine, carried
+                by the relay, and points the JVM at it — so joining servers, signing in and fetching
+                skins all work when only HTTPS gets out. Nothing on this machine is changed
+                permanently, and no administrator is involved.</span></span>
+          </label>
+          <label class="check" style="margin-top:12px">
+            <input type="checkbox" id="restricted" />
+            <span>Restricted mode: bring our own Java, and look nowhere else
+              <span class="hint" style="display:block">Never runs, reads or probes a Java that is
+                already on the machine — the runtime is fetched into the session's own folder and
+                dies with it. For laptops where Java is present but blocked, or where what runs is
+                watched.</span></span>
+          </label>
+        </div>
+
+        <div class="card">
+          <h3>Appearance</h3>
+          <div class="row">
+            <div><label for="fxSelect">Screen effect</label>
+              <select id="fxSelect">
+                <option value="fx-glow">Depth — a soft vignette</option>
+                <option value="fx-grid">Grid — a faint lattice</option>
+                <option value="fx-scan">Scanlines — a slow sweep</option>
+                <option value="none">None — flat and fast</option>
+              </select></div>
+            <div><label for="motionSelect">Background</label>
+              <select id="motionSelect">
+                <option value="follow">Follows the pointer</option>
+                <option value="still">Still</option>
+              </select></div>
+          </div>
+          <div class="hint" style="margin-top:11px">
+            The glow follows the pointer as a composited move, once per animation frame; turn it off
+            if you are on a machine that would rather have the cycles.
+          </div>
         </div>
 
         <div class="card">
@@ -926,77 +985,30 @@ async function loadVersions(){
 }
 
 /* ================================================================= sessions */
-function stateChip(s){
-  const map = { running:"running", exited:"finished", failed:"failed", cancelled:"stopped",
-                cancelling:"stopping", idle:"idle" };
-  return '<span class="state ' + s.state + '">' + (map[s.state] || s.state) + "</span>";
-}
-function renderSessions(){
-  const box = $("sessions");
-  box.innerHTML = "";
-  const list = state.sessions || [];
-  $("noSessions").style.display = list.length ? "none" : "";
-  $("sidepill").textContent = list.length ? list.length + " session(s)" : "no sessions";
-  for (const s of list){
-    const inst = s.instance || {};
-    const el = document.createElement("div");
-    el.className = "session" + (state.selected === s.sid ? " sel" : "");
-    const p = s.progress || {};
-    const pct = (p.percent === null || p.percent === undefined) ? null : p.percent;
-    const bits = [inst.version, inst.loader, (inst.mods && inst.mods.length) ? inst.mods.length + " mod(s)" : null]
-      .filter(Boolean).join(" · ");
-    el.innerHTML =
-      '<div class="top">' +
-        '<span class="ver">' + (inst.version || "session " + s.sid) + "</span>" +
-        '<span class="meta">' + (bits ? bits + " · " : "") + (s.startedAt ? ago(s.startedAt) : "") + "</span>" +
-        '<span class="grow"></span>' + stateChip(s) +
-      "</div>" +
-      '<div class="bar ' + (s.state === "running" && pct === null ? "indet" : "") + '"><i style="width:' +
-        (pct || 0) + '%"></i></div>' +
-      '<div class="hint">' + (s.phaseLabel || s.phase || "") +
-        (s.error ? ' · <span style="color:#ff9aa0">' + String(s.error).slice(0,120) + "</span>" : "") + "</div>" +
-      '<div class="row" style="gap:8px">' +
-        '<button class="tiny" data-act="log">Read its log</button>' +
-        (s.state === "running" || s.state === "cancelling"
-          ? '<button class="tiny danger" data-act="stop">Stop</button>'
-          : '<button class="tiny" data-act="save">Save the session</button>' +
-            '<button class="tiny" data-act="playagain">Play again</button>') +
-      "</div>";
-    el.onclick = (ev) => {
-      const act = ev.target && ev.target.getAttribute && ev.target.getAttribute("data-act");
-      if (act === "stop"){ stopSession(s.sid); return; }
-      if (act === "save"){ downloadBundle(s.sid); return; }
-      if (act === "playagain"){ launch(); return; }
-      selectSession(s.sid);
-    };
-    if (state.selected === s.sid) el.querySelector(".hint");
-    box.appendChild(el);
+function noteProgress(s){
+  // One line of plain language for whatever the newest session is doing. There is no list: a
+  // session is saved for you when it ends, so there is nothing to press.
+  if (!s){ $("phase").textContent = "Ready"; $("instance").textContent = ""; return; }
+  const inst = s.instance || {};
+  const p = s.progress || {};
+  const bar = $("bar");
+  $("phase").textContent = s.phaseLabel || s.phase || s.state;
+  const percent = (p.percent === null || p.percent === undefined) ? null : p.percent;
+  if (s.state === "running" && percent === null){
+    bar.className = "bar indet";
+    $("pct").textContent = p.total ? (p.done + " / " + p.total) : "";
+  } else {
+    bar.className = "bar";
+    bar.firstChild.style.width = (percent || (s.state === "running" ? 0 : 100)) + "%";
+    $("pct").textContent = percent === null ? "" : percent + "%  (" + p.done + " / " + p.total + ")";
   }
-  $("phase").textContent = state.selected && state.sessions.find(x => x.sid === state.selected)
-    ? (state.sessions.find(x => x.sid === state.selected).phaseLabel || "—") : "Ready";
-  $("instance").textContent = "";
-  $("logFor").textContent = state.selected ? "session " + state.selected : "no session";
-}
-function selectSession(sid){
-  state.selected = sid;
-  $("log").innerHTML = "";
-  state.since[sid] = 0;
-  renderSessions();
-  pollLog();
-}
-async function stopSession(sid){
-  try {
-    const r = await (await api("/api/stop?id=" + encodeURIComponent(sid), { method:"POST", timeout:60000 })).json();
-    logLine("stop requested for " + sid + ": " + (r.downloads ? r.downloads + " download(s) killed" : "no download in flight") +
-            (r.game ? ", the game was terminated" : ""), "g");
-  } catch (e){ logLine("stop failed: " + e.message, "e"); }
-}
-async function downloadBundle(sid){
-  try {
-    const blob = await (await api("/api/bundle.zip?id=" + encodeURIComponent(sid), { timeout:180000 })).blob();
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob); a.download = "webmc-session-" + sid + ".zip"; a.click();
-  } catch (e){ logLine("could not fetch that session's files: " + e.message, "e"); }
+  $("instance").textContent = inst.version
+    ? " · " + inst.version + " · " + (inst.loader || "vanilla") +
+      (inst.mods && inst.mods.length ? " · " + inst.mods.length + " mod(s)" : "")
+    : "";
+  $("netstat").textContent = s.downloadedBytes ? "downloaded " + fmt(s.downloadedBytes) : "";
+  $("chipRunning").textContent = s.state === "running" ? "running" : (s.sid ? "last session" : "idle");
+  $("chipRunning").className = "chip" + (s.state === "running" ? " on" : "");
 }
 
 /* ================================================================= mods */
@@ -1130,40 +1142,20 @@ async function refresh(){
   try { data = await jget("/api/sessions", 8000); } catch(e){ return; }
   const previous = state.sessions || [];
   state.sessions = data.sessions || [];
-  if (state.selected && !state.sessions.some(s => s.sid === state.selected)){
-    state.selected = null;
-  }
   const running = state.sessions.filter(s => s.state === "running");
-  if (!state.selected && state.sessions.length) state.selected = state.sessions[0].sid;
-  renderSessions();
-  if (running.length){
-    const p = running[0].progress || {};
-    $("phase").textContent = running[0].phaseLabel || "working";
-    $("instance").textContent = running[0].instance && running[0].instance.version
-      ? " · " + running[0].instance.version + " · " + (running[0].instance.loader || "") : "";
-    const bar = $("bar");
-    if (p.percent === null || p.percent === undefined){
-      bar.className = "bar indet"; $("pct").textContent = p.total ? (p.done + " / " + p.total) : "";
-    } else {
-      bar.className = "bar"; bar.firstChild.style.width = p.percent + "%";
-      $("pct").textContent = p.percent + "%  (" + p.done + " / " + p.total + ")";
-    }
-    $("netstat").textContent = running[0].downloadedBytes
-      ? "downloaded " + fmt(running[0].downloadedBytes) : "";
-    $("logState").textContent = running.length + " running";
-  } else {
-    $("bar").className = "bar"; $("logState").textContent = "idle";
-    $("phase").textContent = state.sessions.length ? "No session is running" : "Ready";
-    $("instance").textContent = ""; $("pct").textContent = ""; $("netstat").textContent = "";
-  }
+  const newest = state.sessions[0] || null;
+  if (newest) state.selected = newest.sid;
+  noteProgress(newest);
+  $("logState").textContent = running.length
+    ? running.length + (running.length === 1 ? " running" : " running") : "idle";
   Journal.update({ phase: $("phase").textContent, state: running.length ? "running" : "idle",
-                   startedAt: (state.sessions[0] || {}).startedAt ? state.sessions[0].startedAt * 1000 : null });
+                   startedAt: newest && newest.startedAt ? newest.startedAt * 1000 : null });
   Journal.flush();
-  // a session that ended while we were watching: take its files, then let the helper delete them
+  // A session that ended while we were watching: its files are taken and stored here, then the
+  // helper is told to delete the sandbox. Nobody has to press anything.
   for (const s of state.sessions){
     const was = previous.find(x => x.sid === s.sid) || {};
-    if (was.state === "running" && s.state !== "running" && !state.result){ await sessionEnded(s); }
-    if (!was.sid) state.seen[s.sid] = true;
+    if (was.state === "running" && s.state !== "running") await sessionEnded(s);
   }
   pollLog();
 }
@@ -1185,14 +1177,13 @@ async function pollLog(){
 async function sessionEnded(s){
   const res = s.result;
   if (!res) return;
-  state.result = res;
   logLine("session " + s.sid + " finished — " + res.files + " file(s), " + fmt(res.bytes) +
           (res.worlds && res.worlds.length ? ", world(s): " + res.worlds.join(", ") : ""), "g");
   let cleanup = null;
   try {
     const blob = await (await api("/api/bundle.zip?id=" + encodeURIComponent(s.sid),
                                   { timeout:180000 })).blob();
-    await Store.put("session-" + s.sid + ".zip", blob);
+    // saved here, in this browser, without being asked: the world comes back on the next PLAY
     await Store.put("last-session.zip", blob);
     await Store.persist();
     logLine("stored " + fmt(blob.size) + " in " + Store.kind, "g");
@@ -1234,7 +1225,7 @@ function showReceipt(res, cleanup, sid){
   box.appendChild(div);
   const acts = document.createElement("div");
   acts.style.marginTop = "11px";
-  acts.innerHTML = '<a href="#" id="dlzip">save the session zip</a> &nbsp;·&nbsp; ' +
+  acts.innerHTML = '<a href="#" id="dlzip">download the session zip</a> &nbsp;·&nbsp; ' +
                    '<a href="#" id="delsession">forget everything this page stored</a>';
   box.appendChild(acts);
   $("dlzip").onclick = async (e) => {
@@ -1294,6 +1285,8 @@ async function launch(){
       assets: $("assets").value === "1",
       relay: $("relay").value.trim() || null,
       tunnelServer: $("server").value.trim() || null,
+      tunnelEverything: $("proxyAll").checked,
+      restricted: $("restricted").checked,
       // the helper keeps its own copy of the last session, so "restore" also decides whether to
       // start from that when this browser has nothing (a different origin does exactly that)
       restore: $("restore").checked
@@ -1344,6 +1337,33 @@ async function diagnostics(){
   }
 }
 
+/* ================================================================= background */
+(function background(){
+  const bg = $("bg");
+  let frame = null, mx = 0.5, my = 0.4;
+  function paint(){
+    frame = null;
+    document.documentElement.style.setProperty("--mx", (mx * 100).toFixed(2) + "%");
+    document.documentElement.style.setProperty("--my", (my * 100).toFixed(2) + "%");
+  }
+  window.addEventListener("pointermove", (e) => {
+    if (motion() === "still") return;
+    mx = e.clientX / window.innerWidth;
+    my = e.clientY / window.innerHeight;
+    if (frame === null) frame = requestAnimationFrame(paint);
+  }, { passive:true });
+  function motion(){ try { return localStorage.getItem(LS + "motion") || "follow"; } catch(e){ return "follow"; } }
+  window.applyMotion = (value) => {
+    try { localStorage.setItem(LS + "motion", value); } catch(e){}
+    bg.style.opacity = value === "still" ? "0.55" : "1";
+  };
+  window.applyFx = (value) => {
+    document.body.className = document.body.className.replace(/\bfx-\S+/g, "").trim();
+    if (value && value !== "none") document.body.classList.add(value);
+    try { localStorage.setItem(LS + "fx", value || "none"); } catch(e){}
+  };
+})();
+
 /* ================================================================= wiring */
 const SHORTCUT_NAME = "WebMC Helper";
 const SHELL_LINE = "D=$(mktemp -d /tmp/webmc.XXXXXX) && cd \"$D\" && curl -fsSL " +
@@ -1364,10 +1384,7 @@ async function startViaShortcut(){
 }
 $("connect").onclick = () => { state.helper = $("helper").value.trim().replace(/\/$/, ""); probe(true); };
 $("play").onclick = launch;
-$("stopAll").onclick = async () => {
-  for (const s of state.sessions.filter(x => x.state === "running")) await stopSession(s.sid);
-  refresh();
-};
+
 $("help").onclick = () => $("about").showModal();
 $("aboutclose").onclick = () => $("about").close();
 $("copydiag").onclick = diagnostics;
@@ -1380,6 +1397,20 @@ $("logHide").onclick = () => {
 $("copyline").onclick = async () => {
   try { await navigator.clipboard.writeText(SHELL_LINE); $("copyok").textContent = "copied"; }
   catch (e){ $("copyok").textContent = "select it and copy by hand"; }
+};
+$("fxSelect").onchange = () => applyFx($("fxSelect").value);
+$("motionSelect").onchange = () => applyMotion($("motionSelect").value);
+$("proxyAll").onchange = () => {
+  try { localStorage.setItem(LS + "proxyAll", $("proxyAll").checked ? "1" : "0"); } catch(e){}
+  logLine($("proxyAll").checked
+    ? "the game's own connections will go through the relay (needs the relay URL)"
+    : "the game will connect directly again");
+};
+$("restricted").onchange = () => {
+  try { localStorage.setItem(LS + "restricted", $("restricted").checked ? "1" : "0"); } catch(e){}
+  logLine($("restricted").checked
+    ? "restricted mode: our own Java, fetched into the session's folder"
+    : "restricted mode off: the machine's Java may be used again");
 };
 $("loader").onchange = () => {
   $("loadercustom").style.display = $("loader").value === "custom" ? "" : "none";
@@ -1429,6 +1460,20 @@ $("openlocal2").onclick = (e) => { e.preventDefault(); window.open("http://127.0
   });
   loadSlugs();
   renderMods();
+  try {
+    const fx = localStorage.getItem(LS + "fx") || "fx-glow";
+    const motion = localStorage.getItem(LS + "motion") || "follow";
+    $("fxSelect").value = fx;
+    $("motionSelect").value = motion;
+    applyFx(fx);
+    applyMotion(motion);
+    $("proxyAll").checked = localStorage.getItem(LS + "proxyAll") === "1";
+    $("restricted").checked = localStorage.getItem(LS + "restricted") === "1";
+  } catch(e){}
+  // a soft arrival rather than a hard cut
+  document.querySelector(".panel").animate(
+    [{ opacity:0, transform:"translateY(6px)" }, { opacity:1, transform:"none" }],
+    { duration:340, easing:"ease-out" });
   $("helper").value = state.helper || "http://127.0.0.1:7645";
   if (hosted){
     $("zipdl").href = "helper/webmc-helper.zip";
