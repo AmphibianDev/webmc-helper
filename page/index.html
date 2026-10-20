@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -7,268 +7,223 @@
 <!--
   A launcher whose interface is a web page, and which keeps nothing of the game on the machine.
 
-  The look, third attempt: one floating frame instead of a full-bleed shell, a gate for a mark, an
-  aurora accent instead of Minecraft green, settings as rows rather than a grid of cards, and the log
-  as a bar inside the frame that opens in place.
-
-  The page cannot start a program, read a file, or see /tmp. A helper on this machine does that; this
-  is the interface to it.
+  The look is built on Modrinth App's dark palette, read from their open source (github.com/modrinth/code,
+  packages/assets/styles/variables.scss): surface steps of #16181c / #1d1f23 / #27292e, text at
+  #ffffff / #b0bac5 / #96a2b0, and their green #09de78 as the one accent. The layout takes the part of
+  a launcher interface that a web page can use well: a list of versions on the left, the chosen one on
+  the right, and the log along the bottom where it has the room to be read.
 -->
 <style>
   :root{
-    --bg:#07080b; --frame:#0d0f15; --card:#11141b; --card2:#0f1218;
-    --ink:#eef1f7; --muted:#9aa3b4; --dim:#6b7386;
-    --line:#ffffff12; --line2:#ffffff24;
-    --mint:#5ef2a8; --cyan:#39c8ff; --violet:#9a8cff; --amber:#ffc46b; --red:#ff8a7a;
-    --r:26px; --r2:18px; --r3:12px; --pill:999px;
-    --shadow:0 30px 80px #000000a6;
-    --aurora:linear-gradient(135deg,var(--mint),var(--cyan));
+    /* Modrinth App's dark surfaces, in their order */
+    --s1:#16181c; --s15:#1a1c20; --s2:#1d1f23; --s25:#222429; --s3:#27292e; --s4:#34363c; --s5:#42444a;
+    /* and their text steps */
+    --ink:#ffffff; --text:#b0bac5; --dim:#96a2b0;
+    /* one accent, theirs */
+    --green:#09de78; --green-hi:#33f598; --green-lo:#00af5c; --green-soft:#76ffbc;
+    --red:#ff496e; --orange:#e7a038;
+    --r-lg:16px; --r:12px; --r-sm:8px;
+    --shadow:0 18px 40px #00000073;
   }
   *{box-sizing:border-box}
   html,body{height:100%}
-  body{margin:0;background:var(--bg);color:var(--ink);overflow:hidden;
-       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-       letter-spacing:.002em;-webkit-font-smoothing:antialiased}
-  a{color:var(--cyan);text-decoration:none} a:hover{text-decoration:underline}
-  code{font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#cfe8ff;background:#ffffff0d;
-       border:1px solid var(--line);border-radius:6px;padding:1px 6px}
-  ::-webkit-scrollbar{width:11px;height:11px}
-  ::-webkit-scrollbar-thumb{background:#ffffff1f;border:4px solid transparent;border-radius:99px;
+  body{margin:0;background:var(--s1);color:var(--text);overflow:hidden;
+       font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       -webkit-font-smoothing:antialiased}
+  a{color:var(--green);text-decoration:none} a:hover{text-decoration:underline}
+  code{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#d6f7e6;background:#ffffff0f;
+       border-radius:5px;padding:1px 5px}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:var(--s4);border:3px solid transparent;border-radius:99px;
                             background-clip:content-box}
   svg{display:block}
+  #fx{position:fixed;inset:0;z-index:0;pointer-events:none}
+  body.fx-glow #fx{box-shadow:inset 0 0 200px #00000080}
+  body.fx-grid #fx{background-image:linear-gradient(#ffffff08 1px,transparent 1px),
+                   linear-gradient(90deg,#ffffff08 1px,transparent 1px);background-size:48px 48px;
+                   mask-image:radial-gradient(70% 55% at 50% 0%,#000 6%,transparent 70%)}
+  body.fx-scan #fx{background:repeating-linear-gradient(#ffffff06 0 1px,transparent 1px 5px)}
 
-  /* ---------------------------------------------------------------- atmosphere */
-  .glow{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
-  .glow i{position:absolute;display:block;border-radius:50%;filter:blur(90px);opacity:.5}
-  .glow i:nth-child(1){width:52rem;height:52rem;left:-12rem;top:-18rem;
-    background:radial-gradient(circle,#5ef2a836,transparent 62%);animation:drift1 44s ease-in-out infinite}
-  .glow i:nth-child(2){width:44rem;height:44rem;right:-14rem;top:18rem;
-    background:radial-gradient(circle,#9a8cff2b,transparent 62%);animation:drift2 56s ease-in-out infinite}
-  @keyframes drift1{50%{transform:translate3d(6rem,4rem,0)}}
-  @keyframes drift2{50%{transform:translate3d(-5rem,-3rem,0)}}
-  /* the pointer moves the whole layer a little: cheap, and it reads as depth rather than as a toy */
-  #bg{transition:transform .5s cubic-bezier(.22,.61,.36,1)}
-  body.motion-follow #bg{transform:translate3d(calc((var(--mx,50%) - 50%) * .05),
-                                              calc((var(--my,42%) - 50%) * .05), 0)}
-  #fx{position:fixed;inset:0;z-index:1;pointer-events:none}
-  body.fx-glow #fx{box-shadow:inset 0 0 240px #0000009e}
-  body.fx-grid #fx{background-image:linear-gradient(#ffffff0a 1px,transparent 1px),
-                   linear-gradient(90deg,#ffffff0a 1px,transparent 1px);background-size:52px 52px;
-                   mask-image:radial-gradient(80% 60% at 50% 0%,#000 8%,transparent 72%)}
-  body.fx-scan #fx{background:repeating-linear-gradient(#ffffff07 0 1px,transparent 1px 5px)}
-  body.fx-scan #fx:after{content:"";position:absolute;inset:0;background:linear-gradient(#0000,#ffffff0d,#0000);
-                         animation:sweep 11s linear infinite}
-  @keyframes sweep{0%{transform:translateY(-60%)}100%{transform:translateY(60%)}}
-
-  /* ---------------------------------------------------------------- the frame */
-  .frame{position:relative;z-index:2;height:100vh;max-width:1280px;margin:0 auto;display:flex;
-         flex-direction:column;background:var(--frame);border:1px solid var(--line);
-         border-radius:var(--r);box-shadow:var(--shadow);overflow:hidden}
-  .frame:before{content:"";position:absolute;inset:0;border-radius:var(--r);padding:1px;pointer-events:none;
-    background:linear-gradient(150deg,#5ef2a83d,#ffffff00 40%,#9a8cff33);
-    -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
-    -webkit-mask-composite:xor;mask-composite:exclude}
-
-  .top{display:flex;align-items:center;gap:18px;padding:20px 26px 14px;flex:none}
-  .brand{display:flex;align-items:center;gap:11px}
-  .brand svg{width:38px;height:38px;flex:none;filter:drop-shadow(0 6px 18px #5ef2a83d)}
-  .brand b{display:block;font-size:17px;letter-spacing:-.02em;font-weight:640;line-height:1.15}
-  .brand span{display:block;font-size:9.5px;letter-spacing:.28em;text-transform:uppercase;color:var(--dim)}
-  nav{display:flex;gap:2px;margin-left:10px;flex:1}
-  nav button{background:none;border:0;color:var(--muted);font:inherit;font-size:14px;padding:9px 14px 11px;
-             position:relative;cursor:pointer;border-radius:10px 10px 0 0}
-  nav button:hover{color:var(--ink)}
-  nav button.on{color:var(--ink)}
-  nav button.on:after{content:"";position:absolute;left:12px;right:12px;bottom:-1px;height:2px;
-                      border-radius:2px;background:var(--aurora)}
-  .pill{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);
-        border:1px solid var(--line);border-radius:var(--pill);padding:7px 13px;background:#ffffff08;
-        white-space:nowrap;backdrop-filter:blur(12px)}
-  .dot{width:7px;height:7px;border-radius:50%;background:var(--dim);flex:none}
-  .dot.ok{background:var(--mint);box-shadow:0 0 12px var(--mint)}
+  /* ------------------------------------------------------------------ chrome */
+  .app{position:relative;z-index:1;height:100vh;display:flex;flex-direction:column;
+       background:var(--s1);border:1px solid #ffffff0f;border-radius:var(--r-lg);overflow:hidden;
+       margin:0;box-shadow:none}
+  .topbar{display:flex;align-items:center;gap:14px;padding:12px 16px;background:var(--s2);
+          border-bottom:1px solid #ffffff0f;flex:none}
+  .brand{display:flex;align-items:center;gap:10px;padding-right:14px;border-right:1px solid #ffffff12}
+  .brand svg{width:30px;height:30px;flex:none}
+  .brand b{font-size:15px;font-weight:650;color:var(--ink);letter-spacing:-.01em}
+  .brand span{font-size:10px;color:var(--dim);display:block;letter-spacing:.14em;text-transform:uppercase}
+  nav{display:flex;gap:4px;flex:1}
+  nav button{background:none;border:0;color:var(--text);font:inherit;font-weight:500;font-size:13.5px;
+             padding:8px 14px;border-radius:var(--r-sm);cursor:pointer}
+  nav button:hover{background:var(--s3);color:var(--ink)}
+  nav button.on{background:var(--s3);color:var(--ink);box-shadow:inset 0 -2px 0 var(--green)}
+  .chip{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--text);
+        background:var(--s3);border-radius:99px;padding:5px 11px;white-space:nowrap}
+  .chip.warn{color:#ffd9a1}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:none}
+  .dot.ok{background:var(--green)}
   .dot.bad{background:var(--red)}
-  .dot.busy{background:var(--amber);animation:blink 1.1s ease-in-out infinite}
-  @keyframes blink{50%{opacity:.25}}
-  .hairline{height:1px;background:linear-gradient(90deg,transparent,var(--line2),transparent);flex:none}
+  .dot.busy{background:var(--orange);animation:pulse 1.1s ease-in-out infinite}
+  @keyframes pulse{50%{opacity:.3}}
 
-  .body{flex:1;min-height:0;overflow:auto;padding:22px 26px 26px}
-  .view{display:none}
-  .view.on{display:block;animation:in .32s cubic-bezier(.22,.61,.36,1)}
-  @keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .main{flex:1;min-height:0;display:flex}
+  .view{display:none;flex:1;min-height:0;overflow:auto}
+  .view.on{display:flex}
+  .view.column{flex-direction:column;gap:14px;padding:16px;max-width:1080px;margin:0 auto;width:100%}
 
-  .split{display:grid;grid-template-columns:1.5fr 1fr;gap:18px;align-items:stretch}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r2);padding:24px 26px;
-        position:relative;overflow:hidden}
-  .card:before{content:"";position:absolute;inset:0;border-radius:var(--r2);padding:1px;pointer-events:none;
-    background:linear-gradient(180deg,#ffffff14,transparent 60%);
-    -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
-    -webkit-mask-composite:xor;mask-composite:exclude}
-  .card.hero{display:flex;flex-direction:column;justify-content:space-between;
-             background:linear-gradient(160deg,#141922,#0f1219 70%)}
-  .card.hero:after{content:"";position:absolute;right:-110px;top:-130px;width:340px;height:340px;
-    border-radius:50%;background:radial-gradient(circle,#5ef2a82e,transparent 65%)}
-  .eyebrow{font-size:10.5px;letter-spacing:.3em;text-transform:uppercase;color:var(--dim);
-           display:flex;align-items:center;gap:9px}
-  .eyebrow:before{content:"";width:16px;height:1px;background:var(--line2)}
-  h1.big{margin:14px 0 0;font-size:clamp(52px,8.4vw,96px);line-height:.9;letter-spacing:-.05em;
-         font-weight:720;
-         background:linear-gradient(105deg,#ffffff,#bff7dd 52%,#5ef2a8);
-         -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
-  .lede{color:var(--muted);font-size:14px;max-width:56ch;margin:16px 0 0}
-  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}
-  .chip{font-size:11.5px;padding:5px 12px;border:1px solid var(--line);border-radius:var(--pill);
-        color:var(--muted);background:#ffffff07}
-  .chip.live{color:#c8ffe4;border-color:#2f6d51;background:#0f2419}
-  .fields{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:24px}
+  /* ------------------------------------------------------------------ versions list */
+  .versions{width:236px;flex:none;background:var(--s2);border-right:1px solid #ffffff0f;
+            display:flex;flex-direction:column;overflow:hidden}
+  .versions h2{margin:0;padding:14px 16px 10px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+               color:var(--dim);font-weight:600}
+  .vlist{flex:1;overflow:auto;padding:0 8px 12px}
+  .vlist button{display:flex;width:100%;align-items:center;justify-content:space-between;gap:8px;
+                background:none;border:0;color:var(--text);font:inherit;text-align:left;cursor:pointer;
+                padding:9px 10px;border-radius:var(--r-sm)}
+  .vlist button:hover{background:var(--s3);color:var(--ink)}
+  .vlist button.on{background:var(--s3);color:var(--ink);box-shadow:inset 2px 0 0 var(--green)}
+  .vlist small{color:var(--dim);font-size:11px}
+  .versions .foot{padding:10px 16px;border-top:1px solid #ffffff0f;font-size:11.5px;color:var(--dim)}
 
-  label{display:block;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
-        margin:0 0 7px}
-  select,input[type=text],input[type=password],input:not([type]){width:100%;background:#0a0c11;
-        border:1px solid var(--line);border-radius:var(--r3);padding:12px 13px;font:inherit;font-size:14px;
-        color:var(--ink);appearance:none;transition:border-color .15s,box-shadow .15s}
+  /* ------------------------------------------------------------------ detail */
+  .detail{flex:1;min-width:0;display:flex;flex-direction:column}
+  .hero{padding:26px 28px 22px;background:linear-gradient(180deg,var(--s2),var(--s1));
+        border-bottom:1px solid #ffffff0f}
+  .hero h1{margin:0;font-size:44px;line-height:1;letter-spacing:-.03em;font-weight:700;color:var(--ink)}
+  .hero .sub{color:var(--dim);font-size:13px;margin-top:8px}
+  .badges{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
+  .badge{font-size:11.5px;color:var(--text);background:var(--s3);border-radius:999px;padding:4px 11px}
+  .badge.on{color:#0b2418;background:var(--green);font-weight:600}
+  .actions{display:flex;gap:12px;align-items:center;margin-top:20px}
+  .play{flex:1;height:58px;border:0;border-radius:var(--r);font-size:16px;font-weight:700;letter-spacing:.04em;
+        background:var(--green);color:#0b2418;cursor:pointer;box-shadow:0 10px 24px #09de7833}
+  .play:hover:not(:disabled){background:var(--green-hi)}
+  .play:disabled{background:var(--s3);color:var(--dim);box-shadow:none;cursor:not-allowed}
+  .halt{height:58px;padding:0 22px;border:0;border-radius:var(--r);font-weight:600;background:#3a1420;
+        color:#ffc2d1;cursor:pointer}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:16px 28px 8px}
+  .panel{background:var(--s2);border:1px solid #ffffff0f;border-radius:var(--r);padding:16px}
+  .panel h3{margin:0 0 12px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
+            font-weight:600}
+  .kv{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid #ffffff0a;
+      font-size:13px}
+  .kv:last-child{border-bottom:0}
+  .kv b{color:var(--ink);font-weight:600;text-align:right;overflow:hidden;text-overflow:ellipsis;
+        white-space:nowrap}
+  label{display:block;font-size:11.5px;color:var(--dim);margin:0 0 6px}
+  select,input:not([type=checkbox]){width:100%;background:var(--s3);border:1px solid #ffffff12;
+        border-radius:var(--r-sm);padding:10px 11px;font:inherit;font-size:13.5px;color:var(--ink);
+        appearance:none}
   select{background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),
                           linear-gradient(135deg,var(--dim) 50%,transparent 50%);
-         background-position:calc(100% - 19px) 50%,calc(100% - 14px) 50%;
-         background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:34px}
-  input:focus,select:focus{outline:none;border-color:#5ef2a880;box-shadow:0 0 0 4px #5ef2a817}
-  button{font:inherit;cursor:pointer;border-radius:var(--r3);border:1px solid var(--line);
-         background:#ffffff0d;color:var(--ink);padding:11px 17px;font-size:14px;
-         display:inline-flex;align-items:center;gap:9px;justify-content:center;
-         transition:transform .12s,background .16s,border-color .16s}
-  button:hover:not(:disabled){background:#ffffff18;border-color:var(--line2);transform:translateY(-1px)}
-  button:disabled{opacity:.35;cursor:not-allowed}
-  button.tiny{padding:6px 12px;font-size:12.5px}
-  button.ghost{background:none}
-  button.danger{background:#2a1512;border-color:#5c2f28;color:#ffb4a8}
-  .go{position:relative;width:100%;margin-top:18px;height:74px;font-size:22px;font-weight:700;
-      letter-spacing:.14em;border:0;border-radius:var(--r3);color:#04140c;overflow:hidden;
-      background:var(--aurora);box-shadow:0 20px 50px #2f8f6a4d,inset 0 1px 0 #ffffff6b}
-  .go:after{content:"";position:absolute;top:0;bottom:0;width:38%;left:-40%;
-            background:linear-gradient(100deg,transparent,#ffffff5c,transparent);
-            animation:sheen 4.6s ease-in-out infinite}
-  @keyframes sheen{0%,72%{left:-40%}86%,100%{left:120%}}
-  .go:disabled{background:#191d26;color:var(--dim);box-shadow:none}
-  .go:disabled:after{display:none}
-  .halt{width:100%;margin-top:18px;height:74px;border-radius:var(--r3);font-size:16px;font-weight:650;
-        background:#2a1512;border:1px solid #5c2f28;color:#ffb4a8}
+         background-position:calc(100% - 17px) 50%,calc(100% - 12px) 50%;background-size:5px 5px,5px 5px;
+         background-repeat:no-repeat;padding-right:32px}
+  input:focus,select:focus{outline:none;border-color:var(--green);box-shadow:0 0 0 3px #09de7822}
+  button{font:inherit;cursor:pointer}
+  .btn{background:var(--s3);border:1px solid #ffffff12;color:var(--ink);border-radius:var(--r-sm);
+       padding:9px 14px;font-size:13.5px;display:inline-flex;align-items:center;gap:8px;justify-content:center}
+  .btn:hover:not(:disabled){background:var(--s4)}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .btn.small{padding:6px 11px;font-size:12.5px}
+  .btn.primary{background:var(--green);color:#0b2418;border-color:transparent;font-weight:600}
+  .btn.danger{background:#3a1420;border-color:#5c2033;color:#ffc2d1}
+  .row{display:flex;gap:10px;align-items:flex-end}
+  .row>*{flex:1}
+  .row .fixed{flex:0 0 auto}
+  .hint{font-size:12.5px;color:var(--dim);line-height:1.7}
+  .note{border:1px solid #4a3a17;background:#2a2213;color:#f0d69a;padding:12px 14px;border-radius:var(--r-sm);
+        font-size:12.8px;line-height:1.65}
+  .bad{border:1px solid #5c2033;background:#2a1420;color:#ffc2d1;padding:12px 14px;border-radius:var(--r-sm);
+       font-size:12.8px;line-height:1.65}
+  .steps{margin:8px 0 0;padding-left:18px;font-size:12.8px;color:var(--text);line-height:1.9}
+  .setting{display:flex;align-items:center;gap:16px;padding:13px 0;border-bottom:1px solid #ffffff0a}
+  .setting:last-child{border-bottom:0}
+  .setting .lab{flex:1;min-width:0}
+  .setting .lab b{display:block;color:var(--ink);font-weight:550;font-size:13.5px}
+  .setting .lab span{display:block;color:var(--dim);font-size:12.2px;margin-top:3px}
+  .setting .ctl{flex:0 0 auto;display:flex;gap:10px;align-items:center}
+  .setting .ctl.wide{flex-basis:320px}
+  .check{display:flex;gap:10px;align-items:flex-start;font-size:13.5px;color:var(--text)}
+  .check input{flex:none;margin-top:4px}
+  .drop{border:1.5px dashed var(--s4);border-radius:var(--r);padding:22px;text-align:center;
+        color:var(--dim);font-size:13px;cursor:pointer}
+  .drop:hover,.drop.over{border-color:var(--green);color:var(--ink);background:#09de7810}
+  .mods,.results{list-style:none;margin:12px 0 0;padding:0;font-size:13px}
+  .mods li,.results li{display:flex;gap:10px;align-items:center;padding:9px 11px;border-radius:var(--r-sm);
+                       background:var(--s25);margin-bottom:6px}
+  .mods .nm,.results .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tag{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);background:var(--s3);
+       border-radius:99px;padding:2px 8px;flex:none}
+  .tag.on{background:#09de7822;color:var(--green-soft)}
+  .results{max-height:320px;overflow:auto}
 
-  /* the facts, as a list rather than tiles */
-  .facts{list-style:none;margin:0;padding:0}
-  .facts li{display:flex;align-items:baseline;gap:14px;padding:13px 0;border-bottom:1px solid var(--line)}
-  .facts li:last-child{border-bottom:0}
-  .facts .k{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);flex:none;
-            width:9.5rem}
-  .facts .v{font-size:15px;font-weight:600;letter-spacing:-.01em;margin-left:auto;text-align:right;
-            min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .facts .s{display:block;font-size:11.5px;color:var(--dim);font-weight:400;margin-top:2px}
-
-  .status{margin-top:18px;background:var(--card);border:1px solid var(--line);border-radius:var(--r2);
-          padding:18px 22px}
-  .statusline{display:flex;align-items:center;gap:14px;font-size:13px;color:var(--muted)}
-  .rail{flex:1;height:5px;border-radius:99px;background:#ffffff12;overflow:hidden}
-  .rail i{display:block;height:100%;width:0;background:var(--aurora);transition:width .45s}
-  .rail.wait i{width:32%;animation:slide 1.35s ease-in-out infinite}
+  /* ------------------------------------------------------------------ log along the bottom */
+  .logbar{flex:none;background:var(--s2);border-top:1px solid #ffffff0f;display:flex;flex-direction:column;
+          height:48px;transition:height .22s ease}
+  body.drawer-open .logbar{height:42vh}
+  .strip{display:flex;align-items:center;gap:12px;height:48px;padding:0 16px;cursor:pointer;flex:none}
+  .strip b{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+  .strip .phase{font-size:12.5px;color:var(--text);min-width:16ch}
+  .track{flex:1;height:6px;background:var(--s3);border-radius:99px;overflow:hidden}
+  .track i{display:block;height:100%;width:0;background:var(--green);transition:width .4s}
+  .track.wait i{width:32%;animation:slide 1.3s ease-in-out infinite}
   @keyframes slide{0%{margin-left:-32%}100%{margin-left:100%}}
-  .cols{display:grid;grid-template-columns:1fr 1fr;gap:18px}
-  .stack>*+*{margin-top:18px}
-  .note{font-size:12.5px;color:var(--muted);line-height:1.75}
-  .warnbox{border:1px solid #6a5220;background:#221b0e;color:#f0d494;padding:14px 16px;border-radius:var(--r3);
-           font-size:13px;line-height:1.7}
-  .badbox{border:1px solid #5c2f28;background:#241311;color:#ffb4a8;padding:14px 16px;border-radius:var(--r3);
-          font-size:13px;line-height:1.7}
-  .steps{margin:10px 0 0;padding-left:20px;font-size:13px;color:var(--muted);line-height:1.95}
-  .rowline{display:flex;align-items:center;gap:18px;padding:15px 0;border-bottom:1px solid var(--line)}
-  .rowline:last-child{border-bottom:0}
-  .rowline .rl{flex:1;min-width:0}
-  .rowline .rl b{display:block;font-size:14px;font-weight:560}
-  .rowline .rl span{display:block;font-size:12.5px;color:var(--dim);margin-top:3px}
-  .rowline .rc{flex:0 0 auto;display:flex;gap:10px;align-items:center}
-  .rowline .rc.wide{flex-basis:340px}
-  .check{display:flex;gap:12px;align-items:flex-start;font-size:14px;color:var(--ink)}
-  .check input{width:auto;flex:none;margin-top:5px}
-  .drop{border:1.5px dashed var(--line2);border-radius:var(--r3);padding:26px;text-align:center;
-        color:var(--muted);font-size:13.5px;cursor:pointer;transition:.16s}
-  .drop:hover,.drop.over{border-color:var(--mint);color:var(--ink);background:#5ef2a80f}
-  .mods{list-style:none;margin:16px 0 0;padding:0;font-size:13.5px}
-  .mods li{display:flex;align-items:center;gap:12px;padding:11px 13px;border:1px solid var(--line);
-           border-radius:var(--r3);margin-bottom:8px;background:#ffffff06}
-  .mods .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .tag{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);border:1px solid var(--line);
-       border-radius:var(--pill);padding:2px 9px;flex:none}
-  .tag.mine{color:#b9f6d6;border-color:#2f6d51}
-  .tag.hub{color:#cad6ff;border-color:#3b4478}
-  .results{list-style:none;margin:16px 0 0;padding:0;max-height:330px;overflow:auto;font-size:13.5px}
-  .results li{display:flex;gap:12px;align-items:center;padding:11px 2px;border-bottom:1px solid var(--line)}
-  .results .nm{flex:1;min-width:0}
-  .results .nm b{font-weight:560}
-  .results .nm div{color:var(--dim);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-
-  /* ---------------------------------------------------------------- the log bar */
-  .logbar{flex:none;border-top:1px solid var(--line);background:#0a0c11cc;backdrop-filter:blur(20px);
-          transition:height .26s cubic-bezier(.4,0,.2,1);height:54px;display:flex;flex-direction:column}
-  body.drawer-open .logbar{height:44vh}
-  .stripline{display:flex;align-items:center;gap:14px;padding:0 26px;height:54px;flex:none;cursor:pointer}
-  .stripline b{font-size:10.5px;letter-spacing:.26em;text-transform:uppercase;color:var(--dim)}
-  .stripline .phase{font-size:13px;color:var(--muted);min-width:15ch}
-  .stripline .pct{font-size:12px;color:var(--dim);min-width:8ch;text-align:right}
-  .stripline .toggle{font-size:11.5px;color:var(--muted);border:1px solid var(--line);border-radius:var(--pill);
-                     padding:5px 13px;background:#ffffff08}
-  .logbody{flex:1;min-height:0;display:none;border-top:1px solid var(--line);flex-direction:column}
+  .strip .pct{font-size:12px;color:var(--dim);min-width:8ch;text-align:right}
+  .strip .toggle{font-size:12px;color:var(--text);background:var(--s3);border:0;border-radius:99px;
+                 padding:5px 12px}
+  .logbody{flex:1;min-height:0;display:none;flex-direction:column;border-top:1px solid #ffffff0f}
   body.drawer-open .logbody{display:flex}
-  .logtools{display:flex;align-items:center;gap:12px;padding:11px 26px;flex:none;border-bottom:1px solid var(--line)}
-  .logtools b{font-size:10.5px;letter-spacing:.26em;text-transform:uppercase;color:var(--dim)}
-  .receipt{display:none;padding:16px 26px;background:#0f2118cc;font-size:13px;line-height:1.8;max-height:38%;
-           overflow:auto;border-bottom:1px solid var(--line)}
-  .receipt h3{margin:0 0 8px;font-size:13px;color:#b9f6d6}
-  .console{flex:1;min-height:0;overflow:auto;padding:16px 26px;font:12.5px/1.85 ui-monospace,SFMono-Regular,Menlo,monospace;
-           white-space:pre-wrap;word-break:break-word;color:#c6cbd6}
-  .console .e{color:#ff9d90} .console .g{color:#9ff0c4} .console .d{color:var(--dim)}
+  .logtools{display:flex;align-items:center;gap:10px;padding:8px 16px;flex:none;
+            border-bottom:1px solid #ffffff0f}
+  .logtools b{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+  .receipt{display:none;padding:12px 16px;background:#0f2a1e;font-size:12.5px;line-height:1.75;
+           max-height:36%;overflow:auto;border-bottom:1px solid #ffffff0f}
+  .receipt h3{margin:0 0 6px;font-size:12.5px;color:var(--green-soft)}
+  .console{flex:1;min-height:0;overflow:auto;padding:12px 16px;
+           font:12.3px/1.75 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;
+           word-break:break-word;color:#c9cfd6;background:#14161a}
+  .console .e{color:#ff8fa3} .console .g{color:var(--green-soft)} .console .d{color:var(--dim)}
 
-  /* ---------------------------------------------------------------- docs */
-  .docwrap{display:grid;grid-template-columns:1fr 208px;gap:32px;align-items:start}
-  .doc{max-width:78ch}
-  .doc h3{font-size:20px;margin:34px 0 10px;font-weight:620;letter-spacing:-.02em}
+  /* ------------------------------------------------------------------ docs */
+  .doc{max-width:74ch}
+  .doc h3{font-size:19px;margin:30px 0 10px;color:var(--ink);font-weight:650;letter-spacing:-.01em}
   .doc h3:first-of-type{margin-top:0}
-  .doc p,.doc li{color:#c9cedb;font-size:14.2px}
-  .doc .lead{font-size:16px;color:var(--muted)}
-  .doc table{border-collapse:collapse;width:100%;margin:18px 0;font-size:13.4px}
-  .doc th,.doc td{border:1px solid var(--line);padding:10px 13px;text-align:left;vertical-align:top}
-  .doc th{background:#ffffff08;color:var(--dim);font-weight:600;font-size:10.5px;letter-spacing:.16em;
-          text-transform:uppercase}
-  .doc hr{border:0;border-top:1px solid var(--line);margin:30px 0}
-  .toc{position:sticky;top:0}
-  .toc a{display:block;font-size:12.5px;color:var(--muted);padding:7px 0;border-bottom:1px solid var(--line)}
+  .doc p,.doc li{color:var(--text);font-size:13.8px}
+  .doc .lead{font-size:15.5px;color:var(--dim)}
+  .doc table{border-collapse:collapse;width:100%;margin:16px 0;font-size:13px}
+  .doc th,.doc td{border:1px solid #ffffff12;padding:9px 12px;text-align:left;vertical-align:top}
+  .doc th{background:var(--s3);color:var(--dim);font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+          font-weight:600}
+  .doc hr{border:0;border-top:1px solid #ffffff12;margin:26px 0}
+  .toc{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 20px}
+  .toc a{font-size:12px;color:var(--text);background:var(--s3);border-radius:99px;padding:5px 12px}
   .toc a:hover{color:var(--ink);text-decoration:none}
-  dialog{border:1px solid var(--line);background:#101319f2;backdrop-filter:blur(24px);color:var(--ink);
-         border-radius:var(--r2);max-width:660px;padding:0;box-shadow:var(--shadow)}
-  dialog::backdrop{background:#000000b8}
-  dialog .inner{padding:26px 28px}
-  dialog h3{margin:0 0 12px;font-size:18px}
-  dialog p{font-size:13.5px;color:var(--muted);line-height:1.8}
-  @media (max-width:1080px){.split,.cols,.docwrap{grid-template-columns:1fr}.toc{display:none}}
+  dialog{border:1px solid #ffffff14;background:var(--s2);color:var(--text);border-radius:var(--r);
+         max-width:640px;padding:0;box-shadow:var(--shadow)}
+  dialog::backdrop{background:#000000b3}
+  dialog .inner{padding:22px 24px}
+  dialog h3{margin:0 0 10px;color:var(--ink);font-size:17px}
+  dialog p{font-size:13.2px;color:var(--text);line-height:1.75}
+  @media (max-width:980px){.versions{display:none}.grid{grid-template-columns:1fr}}
   @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body class="fx-glow">
-<div class="glow" id="bg" aria-hidden="true"><i></i><i></i></div>
 <div id="fx" aria-hidden="true"></div>
 <input type="checkbox" id="proxyAll" hidden /><input type="checkbox" id="restricted" hidden />
+<span id="bg" hidden></span>
 
-<div class="frame" id="app">
-  <header class="top">
+<div class="app">
+  <header class="topbar">
     <div class="brand">
-      <svg viewBox="0 0 40 40" aria-hidden="true">
-        <defs>
-          <linearGradient id="aur" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stop-color="#5ef2a8"/><stop offset="1" stop-color="#39c8ff"/>
-          </linearGradient>
-        </defs>
-        <rect x="1.4" y="1.4" width="37.2" height="37.2" rx="11.6" fill="#5ef2a81a"
-              stroke="url(#aur)" stroke-width="1.6"/>
-        <path d="M11.5 28.5V15.5a8.5 8.5 0 0 1 17 0v13" fill="none" stroke="url(#aur)"
-              stroke-width="3.4" stroke-linecap="round"/>
-        <path d="M20 8.5v11.5" stroke="#07080b" stroke-width="3.4" stroke-linecap="round"/>
-        <circle cx="20" cy="25.6" r="2.7" fill="url(#aur)"/>
+      <svg viewBox="0 0 32 32" aria-hidden="true">
+        <rect x="1" y="1" width="30" height="30" rx="9" fill="#09de7822" stroke="#09de78" stroke-width="1.5"/>
+        <path d="M9.5 23V13a6.5 6.5 0 0 1 13 0v10" fill="none" stroke="#09de78" stroke-width="2.6"
+              stroke-linecap="round"/>
+        <path d="M16 8v9" stroke="#16181c" stroke-width="2.6" stroke-linecap="round"/>
+        <circle cx="16" cy="21" r="2.1" fill="#09de78"/>
       </svg>
       <div><b>WebMC</b><span>launcher</span></div>
     </div>
@@ -279,411 +234,222 @@
       <button id="navDoc">Documentation</button>
     </nav>
     <span id="viewTitle" hidden></span>
-    <span class="pill" id="conn"><i class="dot" id="cd"></i><span id="ct">connecting…</span></span>
-    <span class="pill" id="where">—</span>
-    <a class="pill" href="#" id="openlocal2" style="display:none">helper's page</a>
-    <a class="pill" href="#" id="stay" style="display:none">stay here</a>
+    <span class="chip" id="where">—</span>
+    <span class="chip" id="conn"><i class="dot" id="cd"></i><span id="ct">connecting…</span></span>
+    <a class="chip" href="#" id="openlocal2" style="display:none">helper's page</a>
+    <a class="chip" href="#" id="stay" style="display:none">stay here</a>
   </header>
-  <div class="hairline"></div>
 
-  <div class="body">
+  <div class="main">
+    <aside class="versions">
+      <h2>Versions</h2>
+      <div class="vlist" id="verList"></div>
+      <div class="foot" id="verFoot">—</div>
+    </aside>
+
     <section class="view on" id="viewPlay">
-      <div class="split">
-        <div class="card hero">
-          <div>
-            <div class="eyebrow" id="viewSub">real Minecraft, kept nowhere</div>
-            <h1 class="big" id="versionBig">1.21.11</h1>
-            <p class="lede">The real Java client with Fabric, running on this computer from one folder
-              under <code>/tmp</code> that is deleted the moment you close it. Your world, your mods and
-              your settings stay in this browser — nothing nests on the machine.</p>
-            <div class="chips">
-              <span class="chip" id="chipRunning">idle</span>
-              <span class="chip" id="chipMods">no mods</span>
-              <span class="chip" id="chipMemory">2G</span>
-              <span class="chip" id="chipAssets">assets: download</span>
-            </div>
-            <div class="fields">
-              <div><label for="version">Minecraft version</label><select id="version"></select></div>
-              <div><label for="loader">Mod loader</label>
-                <select id="loader">
-                  <option value="stable" selected>Fabric — newest stable</option>
-                  <option value="latest">Fabric — newest</option>
-                  <option value="custom">Fabric — a specific version…</option>
-                  <option value="none">Vanilla — no Fabric</option>
-                </select>
-                <input id="loadercustom" placeholder="e.g. 0.19.5" style="display:none;margin-top:8px" />
-              </div>
-            </div>
+      <div class="detail">
+        <div class="hero">
+          <h1 id="versionBig">1.21.11</h1>
+          <div class="sub" id="viewSub">real Minecraft, kept nowhere</div>
+          <div class="badges">
+            <span class="badge" id="chipRunning">idle</span>
+            <span class="badge" id="chipMods">no mods</span>
+            <span class="badge" id="chipMemory">2G</span>
+            <span class="badge" id="chipAssets">assets: download</span>
           </div>
-          <div>
-            <button class="go" id="play" disabled>PLAY</button>
+          <div class="actions">
+            <select id="version" style="display:none"></select>
+            <select id="loader" style="flex:0 0 260px">
+              <option value="stable" selected>Fabric — newest stable</option>
+              <option value="latest">Fabric — newest</option>
+              <option value="custom">Fabric — a specific version…</option>
+              <option value="none">Vanilla — no Fabric</option>
+            </select>
+            <input id="loadercustom" placeholder="e.g. 0.19.5" style="display:none;flex:0 0 160px" />
+            <button class="play" id="play" disabled>PLAY</button>
             <button class="halt" id="stop" style="display:none">STOP</button>
           </div>
         </div>
 
-        <div class="card">
-          <div class="eyebrow">this machine</div>
-          <ul class="facts">
-            <li><span class="k">Java</span><span class="v" id="factJava">not looked for yet</span></li>
-            <li><span class="k">Sandbox</span><span class="v" id="factSandbox">—</span>
-              <span class="s" id="factSandboxSub">deleted when the session ends</span></li>
-            <li><span class="k">Storage</span><span class="v" id="factStorage">—</span>
-              <span class="s" id="factStorageSub">in this browser, never uploaded</span></li>
-            <li><span class="k">Sessions</span><span class="v" id="factSessions">none yet</span>
-              <span class="s">more than one can run at once</span></li>
-          </ul>
-          <div class="note" id="factJavaSub" style="margin-top:12px"></div>
-        </div>
-      </div>
-
-      <div class="status">
-        <div class="statusline">
-          <strong id="phase" style="color:var(--ink);font-weight:600">Ready</strong>
-          <span id="instance"></span>
-          <span class="rail" id="bar"><i></i></span>
-          <span id="pct" style="min-width:7ch;text-align:right"></span>
-        </div>
-        <div class="note" id="netstat" style="margin-top:10px"></div>
-        <div id="notready" style="display:none;margin-top:14px"></div>
-        <div id="offline" style="display:none;margin-top:16px">
-          <div class="badbox" id="offlinetext"></div>
-          <div id="shortcutbox" style="display:none">
-            <div class="note" style="color:var(--ink);margin-top:16px">
-              <b>macOS: start the helper for me.</b> The Shortcut fetches it into <code>/tmp</code>, runs
-              it there, and when the session ends the helper deletes itself and its folder. Nothing is
-              installed, and nothing survives.
-            </div>
-            <button id="kickhelper" style="margin-top:11px">Start the helper for me</button>
-            <div class="note" id="kicks" style="margin-top:9px"></div>
-            <details style="margin-top:14px">
-              <summary class="note" style="cursor:pointer">One-time: make that Shortcut (4 steps)</summary>
-              <ol class="steps">
-                <li>Open <b>Shortcuts</b>, press <b>+</b>.</li>
-                <li>Add the action <b>Run Shell Script</b>.</li>
-                <li>Set <b>Pass Input</b> to <b>to stdin</b>, paste this:</li>
-              </ol>
-              <code id="shellline" style="display:block;padding:11px;margin-top:8px;white-space:pre-wrap;word-break:break-all"></code>
-              <button class="tiny" id="copyline" style="margin-top:10px">Copy the line</button>
-              <div class="note" id="copyok" style="margin-top:8px"></div>
-              <ol class="steps" start="4">
-                <li>Name it exactly <b>WebMC Helper</b> and save.
-                  <b>Shortcuts → Settings → Advanced → Allow Running Scripts</b> once.</li>
-              </ol>
-            </details>
+        <div class="grid">
+          <div class="panel">
+            <h3>This machine</h3>
+            <div class="kv"><span>Java</span><b id="factJava">not looked for yet</b></div>
+            <div class="kv"><span>Sandbox</span><b id="factSandbox">—</b></div>
+            <div class="kv"><span>Storage</span><b id="factStorage">—</b></div>
+            <div class="kv"><span>Sessions</span><b id="factSessions">none yet</b></div>
+            <div class="hint" id="factJavaSub" style="margin-top:10px"></div>
+            <div class="hint" id="factSandboxSub" style="margin-top:4px"></div>
+            <div class="hint" id="factStorageSub" style="margin-top:4px"></div>
           </div>
-          <div id="gethelper" style="display:none">
-            <div class="note" style="color:var(--ink);margin-top:16px"><b>Start it once — no terminal,
-              no typing.</b> On a Mac, download this and double-click it in Downloads, and you are done:
-              it installs two small files and one login item, so from then on it is simply always there.
-              It comes back by itself if it ever stops, and <b>Leave nothing</b> removes all of it again.</div>
-            <div style="margin-top:12px;display:flex;gap:11px;flex-wrap:wrap;align-items:center">
-              <a id="appdl" href="helper/WebMC-Helper-mac.zip" download
-                 style="display:inline-flex;align-items:center;gap:9px;padding:12px 18px;border-radius:12px;
-                        background:linear-gradient(135deg,var(--mint),var(--cyan));color:#04140c;
-                        font-weight:650">Download WebMC Helper (macOS)</a>
-              <span class="note">Then double-click what lands in Downloads.</span>
+          <div class="panel">
+            <h3>Status</h3>
+            <div class="kv"><span>Phase</span><b id="phase">Ready</b></div>
+            <div class="kv"><span>Progress</span><b id="pct"></b></div>
+            <div class="hint" id="instance" style="margin-top:8px"></div>
+            <div class="hint" id="netstat" style="margin-top:6px"></div>
+            <div class="track" id="bar" style="margin-top:12px"><i></i></div>
+            <div id="notready" style="display:none;margin-top:12px"></div>
+            <div id="offline" style="display:none;margin-top:12px">
+              <div class="bad" id="offlinetext"></div>
+              <div id="shortcutbox" style="display:none">
+                <div class="hint" style="color:var(--ink);margin-top:12px">
+                  <b>macOS: start the helper for me.</b> The Shortcut fetches it into <code>/tmp</code>,
+                  runs it there, and when the session ends the helper deletes itself and its folder.
+                  Nothing is installed, and nothing survives.</div>
+                <button class="btn" id="kickhelper" style="margin-top:10px">Start the helper for me</button>
+                <div class="hint" id="kicks" style="margin-top:8px"></div>
+                <details style="margin-top:12px">
+                  <summary class="hint" style="cursor:pointer">One-time: make that Shortcut (4 steps)</summary>
+                  <ol class="steps">
+                    <li>Open <b>Shortcuts</b>, press <b>+</b>.</li>
+                    <li>Add the action <b>Run Shell Script</b>.</li>
+                    <li>Set <b>Pass Input</b> to <b>to stdin</b>, paste this:</li>
+                  </ol>
+                  <code id="shellline" style="display:block;padding:10px;margin-top:8px;white-space:pre-wrap;word-break:break-all"></code>
+                  <button class="btn small" id="copyline" style="margin-top:8px">Copy the line</button>
+                  <div class="hint" id="copyok" style="margin-top:6px"></div>
+                  <ol class="steps" start="4">
+                    <li>Name it exactly <b>WebMC Helper</b> and save.
+                      <b>Shortcuts → Settings → Advanced → Allow Running Scripts</b> once.</li>
+                  </ol>
+                </details>
+              </div>
+              <div id="gethelper" style="display:none">
+                <div class="hint" style="color:var(--ink);margin-top:12px"><b>Start it once — no terminal,
+                  no typing.</b> On a Mac, download this and double-click it in Downloads: it installs two
+                  small files and one login item, so from then on it is simply always there.</div>
+                <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+                  <a class="btn primary" id="appdl" href="helper/WebMC-Helper-mac.zip" download>Download WebMC Helper (macOS)</a>
+                  <span class="hint">Then double-click what lands in Downloads.</span>
+                </div>
+                <details style="margin-top:12px">
+                  <summary class="hint" style="cursor:pointer">Windows, Linux, or you would rather see the pieces</summary>
+                  <ol class="steps">
+                    <li><a id="zipdl" href="helper/webmc-helper.zip" download>Download webmc-helper.zip</a>.</li>
+                    <li>Double-click <code>webmc-helper.command</code>: it installs itself and starts at every
+                      login. This one does open a Terminal window while it works.</li>
+                    <li>Come back and press PLAY.</li>
+                  </ol>
+                </details>
+                <div class="hint" style="margin-top:8px">Already running?
+                  <a href="#" id="openlocal">Open the helper's page</a>.</div>
+              </div>
             </div>
-            <details style="margin-top:14px">
-              <summary class="note" style="cursor:pointer">Windows, Linux, or you would rather see the pieces</summary>
-              <ol class="steps">
-                <li><a id="zipdl" href="helper/webmc-helper.zip" download>Download webmc-helper.zip</a> and
-                  double-click it.</li>
-                <li>Double-click <code>webmc-helper.command</code>: it installs itself and starts at every
-                  login. This one does open a Terminal window while it works.</li>
-                <li>Come back and press PLAY.</li>
-              </ol>
-            </details>
-            <div class="note" style="margin-top:10px">Already running?
-              <a href="#" id="openlocal">Open the helper's page</a>.</div>
           </div>
         </div>
+        <div style="padding:0 28px 20px"><div class="hint" id="modhint"></div></div>
       </div>
     </section>
 
-    <section class="view" id="viewMods">
-      <div class="cols">
-        <div class="card">
-          <div class="eyebrow">your mods<span id="modcount" class="tag" style="margin-left:10px"></span></div>
-          <div class="drop" id="drop" style="margin-top:16px">
-            <b>Drop mod .jar files here</b><br />or click to choose them
-            <div class="note" style="margin-top:8px">Kept in this browser, never on the computer, and
-              handed to the helper before each launch.</div>
-          </div>
-          <input type="file" id="picker" accept=".jar" multiple style="display:none" />
-          <ul class="mods" id="modlist"></ul>
-          <div class="note" id="modhint"></div>
+    <section class="view column" id="viewMods">
+      <div class="panel">
+        <h3>Your mods <span class="tag" id="modcount"></span></h3>
+        <div class="drop" id="drop">
+          <b>Drop mod .jar files here</b><br />or click to choose them
+          <div class="hint" style="margin-top:8px">Kept in this browser, never on the computer, and handed
+            to the helper before each launch.</div>
         </div>
-        <div class="card">
-          <div class="eyebrow">from Modrinth</div>
-          <div style="display:flex;gap:10px;margin-top:16px">
-            <input id="search" placeholder="sodium, lithium, iris…" />
-            <button id="dobsearch">Search</button>
-          </div>
-          <ul class="results" id="results"></ul>
-          <div class="note" id="searchhint" style="margin-top:12px">Searched by the helper, so it works
-            even on a network where this browser cannot reach Modrinth.</div>
+        <input type="file" id="picker" accept=".jar" multiple style="display:none" />
+        <ul class="mods" id="modlist"></ul>
+      </div>
+      <div class="panel">
+        <h3>From Modrinth</h3>
+        <div class="row">
+          <input id="search" placeholder="sodium, lithium, iris…" />
+          <button class="btn fixed" id="dobsearch">Search</button>
         </div>
+        <ul class="results" id="results"></ul>
+        <div class="hint" id="searchhint" style="margin-top:10px">Searched by the helper, so it works even
+          on a network where this browser cannot reach Modrinth.</div>
       </div>
     </section>
 
-    <section class="view" id="viewSettings">
-      <div class="stack">
-        <div class="card">
-          <div class="eyebrow">the game</div>
-          <div class="rowline" style="margin-top:8px">
-            <div class="rl"><b>Username</b><span>Offline name, as servers accept it</span></div>
-            <div class="rc wide"><input id="username" value="Player" maxlength="16" /></div>
-          </div>
-          <div class="rowline">
-            <div class="rl"><b>Memory</b><span>How much the game may use</span></div>
-            <div class="rc wide"><input id="memory" value="2G" /></div>
-          </div>
-          <div class="rowline">
-            <div class="rl"><b>Sounds and textures</b>
-              <span>430 MB of assets; they make the game look and sound like itself</span></div>
-            <div class="rc wide"><select id="assets">
-              <option value="1" selected>Download them (~430 MB, once a session)</option>
-              <option value="0">Skip them — fast, and the game will look broken</option>
-            </select></div>
-          </div>
-          <div class="rowline">
-            <div class="rl"><b>Keep the downloads for next time</b>
-              <span>Mojang's files, kept in this machine's cache — about 430 MB. Worth it on a slow
-                or filtered network: without it every launch fetches them again. <b>Leave nothing</b>
-                removes the cache with everything else.</span></div>
-            <div class="rc"><input type="checkbox" id="cacheKeep" /></div>
-          </div>
-          <div class="rowline">
-            <div class="rl"><b>Put this browser's last session back</b>
-              <span>Worlds, options and screenshots live in this browser. Nothing is uploaded.</span></div>
-            <div class="rc"><input type="checkbox" id="restore" checked /></div>
-          </div>
-        </div>
+    <section class="view column" id="viewSettings">
+      <div class="panel">
+        <h3>The game</h3>
+        <div class="setting"><div class="lab"><b>Username</b><span>Offline name, as servers accept it</span></div>
+          <div class="ctl wide"><input id="username" value="Player" maxlength="16" /></div></div>
+        <div class="setting"><div class="lab"><b>Memory</b><span>How much the game may use</span></div>
+          <div class="ctl wide"><input id="memory" value="2G" /></div></div>
+        <div class="setting"><div class="lab"><b>Sounds and textures</b>
+          <span>430 MB of assets; 26.x will not start without them</span></div>
+          <div class="ctl wide"><select id="assets">
+            <option value="1" selected>Download them (~430 MB, once a session)</option>
+            <option value="0">Skip them — fast, and the game will look broken</option>
+          </select></div></div>
+        <div class="setting"><div class="lab"><b>Keep the downloads for next time</b>
+          <span>Mojang's files in this machine's cache, about 430 MB. Worth it on a slow or filtered
+            network: measured here, a second launch went from 85s to 35s. <b>Leave nothing</b> removes it.</span></div>
+          <div class="ctl"><input type="checkbox" id="cacheKeep" /></div></div>
+        <div class="setting"><div class="lab"><b>Put this browser's last session back</b>
+          <span>Worlds, options and screenshots live in this browser. Nothing is uploaded.</span></div>
+          <div class="ctl"><input type="checkbox" id="restore" checked /></div></div>
+      </div>
 
-        <div class="card">
-          <div class="eyebrow">appearance</div>
-          <div class="rowline" style="margin-top:8px">
-            <div class="rl"><b>Screen effect</b><span>The layer over the whole window</span></div>
-            <div class="rc wide"><select id="fxSelect">
-              <option value="fx-glow">Depth — a soft vignette</option>
-              <option value="fx-grid">Grid — a faint lattice</option>
-              <option value="fx-scan">Scanlines — a slow sweep</option>
-              <option value="none">None — flat and fast</option>
-            </select></div>
-          </div>
-          <div class="rowline">
-            <div class="rl"><b>Background</b><span>Two blobs, drifting slowly</span></div>
-            <div class="rc wide"><select id="motionSelect">
-              <option value="follow">Follows the pointer</option>
-              <option value="still">Still</option>
-            </select></div>
-          </div>
-        </div>
+      <div class="panel">
+        <h3>Appearance</h3>
+        <div class="setting"><div class="lab"><b>Screen effect</b><span>The layer over the window</span></div>
+          <div class="ctl wide"><select id="fxSelect">
+            <option value="fx-glow">Depth — a soft vignette</option>
+            <option value="fx-grid">Grid — a faint lattice</option>
+            <option value="fx-scan">Scanlines — a slow sweep</option>
+            <option value="none">None — flat and fast</option>
+          </select></div></div>
+        <div class="setting"><div class="lab"><b>Background</b><span>Kept still by default now</span></div>
+          <div class="ctl wide"><select id="motionSelect">
+            <option value="follow">Follows the pointer</option>
+            <option value="still">Still</option>
+          </select></div></div>
+      </div>
 
-        <div class="card">
-          <div class="eyebrow">if a network blocks things</div>
-          <p class="note" style="margin:12px 0 4px">
-            <b style="color:var(--ink)">One setting, everything uses it.</b> When a relay is in play it
-            carries the downloads <i>and</i> the game's own connections — joining, authenticating, skins.
-            Choose <b>Never</b> to opt out completely.
-          </p>
-          <div class="rowline">
-            <div class="rl"><b>Relay</b><span id="relayInUse">—</span></div>
-            <div class="rc wide"><select id="relayMode">
-              <option value="auto" selected>Automatic — use the built-in one if there is one</option>
-              <option value="off">Never — connect directly, even if a network blocks it</option>
-              <option value="custom">My own relay…</option>
-            </select></div>
-          </div>
-          <div class="rowline" id="relayCustomRow" style="display:none">
-            <div class="rl"><b>Your relay's address</b><span>Anyone can run one; see Documentation</span></div>
-            <div class="rc wide"><input id="relay" placeholder="https://webmc-relay.you.workers.dev" /></div>
-          </div>
-          <div class="rowline">
-            <div class="rl"><b>Join this server straight away</b>
-              <span>SRV records are followed. Optional.</span></div>
-            <div class="rc wide"><input id="server" placeholder="play.example.net:25565" /></div>
-          </div>
-          <div class="rowline">
-            <div class="rl"><b>Check it</b><span id="relayState">Nothing tested yet.</span></div>
-            <div class="rc"><button id="relayTest">Test the relay</button></div>
-          </div>
-        </div>
+      <div class="panel">
+        <h3>If a network blocks things</h3>
+        <p class="hint" style="margin:6px 0 4px"><b style="color:var(--ink)">One setting, everything uses
+          it.</b> When a relay is in play it carries the downloads <i>and</i> the game's own connections.
+          On a network with a proxy of your own, downloads go straight through that instead — measured
+          twice as fast as the relay here.</p>
+        <div class="setting"><div class="lab"><b>Relay</b><span id="relayInUse">—</span></div>
+          <div class="ctl wide"><select id="relayMode">
+            <option value="auto" selected>Automatic — use the built-in one if there is one</option>
+            <option value="off">Never — connect directly, even if a network blocks it</option>
+            <option value="custom">My own relay…</option>
+          </select></div></div>
+        <div class="setting" id="relayCustomRow" style="display:none">
+          <div class="lab"><b>Your relay's address</b><span>Anyone can run one; see Documentation</span></div>
+          <div class="ctl wide"><input id="relay" placeholder="https://webmc-relay.you.workers.dev" /></div></div>
+        <div class="setting"><div class="lab"><b>Join this server straight away</b>
+          <span>SRV records are followed. Optional.</span></div>
+          <div class="ctl wide"><input id="server" placeholder="play.example.net:25565" /></div></div>
+        <div class="setting"><div class="lab"><b>Check it</b><span id="relayState">Nothing tested yet.</span></div>
+          <div class="ctl"><button class="btn" id="relayTest">Test the relay</button></div></div>
+      </div>
 
-        <div class="card">
-          <div class="eyebrow">the helper on this machine</div>
-          <div class="rowline" style="margin-top:8px">
-            <div class="rl"><b>Address</b><span id="connhint">—</span></div>
-            <div class="rc wide"><input id="helper" placeholder="http://127.0.0.1:7645" />
-              <button id="connect">Connect</button></div>
-          </div>
-          <div class="rowline">
-            <div class="rl"><b>What is on this machine</b><span id="machineState">checking…</span></div>
-            <div class="rc">
-              <button id="copydiag">Copy diagnostics</button>
-              <button id="help">How this works</button>
-              <button class="danger" id="purge">Leave nothing</button>
-            </div>
-          </div>
-          <div class="note" id="diagstate" style="margin-top:10px"></div>
-          <div class="note" id="purgeState" style="margin-top:6px"></div>
-        </div>
+      <div class="panel">
+        <h3>The helper on this machine</h3>
+        <div class="setting"><div class="lab"><b>Address</b><span id="connhint">—</span></div>
+          <div class="ctl wide"><input id="helper" placeholder="http://127.0.0.1:7645" />
+            <button class="btn" id="connect">Connect</button></div></div>
+        <div class="setting"><div class="lab"><b>What is on this machine</b>
+          <span id="machineState">checking…</span></div>
+          <div class="ctl">
+            <button class="btn" id="copydiag">Copy diagnostics</button>
+            <button class="btn" id="help">How this works</button>
+            <button class="btn danger" id="purge">Leave nothing</button>
+          </div></div>
+        <div class="hint" id="diagstate" style="margin-top:10px"></div>
+        <div class="hint" id="purgeState" style="margin-top:6px"></div>
       </div>
     </section>
 
-    <section class="view" id="viewDoc">
-      <div class="docwrap">
-        <div class="doc">
-          <p class="lead">WebMC is a Minecraft launcher whose interface is a web page, and whose promise
-            is that the computer it runs on is borrowed rather than used: the game, the Java runtime
-            and the helper are all deleted when the session ends.</p>
-          <h3 id="d1">Why the page cannot launch anything</h3>
-          <p>A web page cannot start a program, read a file, or look inside <code>/tmp</code>. There is
-            no API for it: WebAssembly and an in-page JVM are sandboxed, <code>file://</code> gives an
-            opaque origin that cannot even reach <code>127.0.0.1</code>, a custom protocol handler and a
-            browser extension both need an installer first, and a page has never been allowed to run a
-            file it downloaded.</p>
-          <p>That is not an oversight. The features that once did allow it — ActiveX controls, Java
-            applets, Netscape plugins, Flash — were all removed precisely because a page being able to
-            run native code is a security hole rather than a feature.</p>
-          <p>Local Network Access, in current Chromium, makes the boundary explicit. Measured from a
-            public page (this launcher on GitHub Pages) to the helper on <code>127.0.0.1</code>:</p>
-          <table>
-            <tr><th>Route</th><th>Result</th></tr>
-            <tr><td><code>fetch()</code></td><td>Refused, or a permission prompt — “Permission was denied
-              for this request to access the <code>loopback</code> address space.”</td></tr>
-            <tr><td>an <code>&lt;iframe&gt;</code></td><td>Refused: the frame tree comes back with no child
-              frame at all. A blocked frame still fires <code>load</code>, so that event proves nothing.</td></tr>
-            <tr><td>a top-level navigation</td><td><b>Allowed</b>, with no prompt and no console error.</td></tr>
-          </table>
-          <p>Two things are worth telling an administrator, because they decide whether any of this works
-            on a managed machine: the permission is called <b>Local Network Access</b> in Chromium's site
-            settings, and one policy can refuse it outright — <code>LocalNetworkAccessBlockedForUrls</code>.
-            Where that policy is set, nothing on a page can reach a local helper at all, and the helper's
-            own page is the only route left.</p>
-          <p>That last row is why this launcher behaves the way it does: the GitHub page cannot
-            <i>drive</i> the helper, so it hands the tab to the helper's own page the moment it loads,
-            which is allowed to talk to it — same origin, no prompt.</p>
-
-          <h3 id="d2">What the helper does, step by step</h3>
-          <ol>
-            <li><b>One staging directory.</b> Everything goes there and nowhere else: a Python runtime if
-              the machine has none, the helper, and later the game.</li>
-            <li><b>A Java runtime, found or fetched.</b> The version's own metadata says which Java it
-              needs (<code>javaVersion.majorVersion</code>), and if this machine has nothing suitable the
-              runtime is fetched into the staging directory and dies with it.</li>
-            <li><b>The game, from Mojang.</b> Client, the version's own libraries and the assets, every
-              file verified against its published SHA-1, downloaded in parallel.</li>
-            <li><b>The loader and your mods.</b> Fabric's profile from Fabric's own metadata; your jars
-              from this browser's storage, or fetched from Modrinth for the version you picked.</li>
-            <li><b>The real client starts.</b> An ordinary <code>java …KnotClient</code> process, with a
-              normal window, exactly as any launcher would run it.</li>
-            <li><b>You watch it here.</b> The client's own output, streamed live into the log at the
-              bottom of the window — which is why a crash is readable instead of mysterious.</li>
-            <li><b>When it exits</b> — closed, crashed, or stopped from here — the helper collects saves,
-              logs, screenshots, configuration and crash reports into one zip.</li>
-            <li><b>This page takes that zip</b> into browser storage, and tells the helper to delete the
-              sandbox. Nobody has to press anything: saving is automatic.</li>
-            <li><b>Nothing is left for you to tidy up.</b> If the page never comes back the helper
-              deletes the sandbox itself after a deadline; if the helper is killed outright the next one
-              finds the leftover by its owner file; if the machine reboots the OS clears its own temp
-              directory. <b>Settings → What is on this machine</b> shows the inventory, and
-              <b>Leave nothing</b> removes all of it.</li>
-          </ol>
-
-          <h3 id="d3">What is left afterwards</h3>
-          <table>
-            <tr><th>How you start it</th><th>What remains when the session ends</th></tr>
-            <tr><td><b>Transient</b> — the macOS Shortcut</td>
-              <td><b>Nothing at all.</b> The staging directory goes too: the Python runtime, the helper,
-                the Java runtime, the game, the sandbox.</td></tr>
-            <tr><td><b>Installed</b> — the double-click file</td>
-              <td><b>Two small files</b>: one Python file in Application Support, one launch agent so it
-                starts at every login. The game is still deleted every session, and
-                <b>Leave nothing</b> removes both.</td></tr>
-            <tr><td><b>Downloads, if you ask for them to be kept</b></td>
-              <td>A cache directory of Mojang's files, so the next launch does not download them again.
-                It is off unless you turn it on, and it is named in the inventory above.</td></tr>
-            <tr><td><b>Browser storage</b></td>
-              <td>Your world, your mods and your settings, in this origin's own storage. That is the one
-                thing which persists on purpose — it is what makes the game disposable.</td></tr>
-          </table>
-
-          <h3 id="d4">Where your world lives</h3>
-          <p>In this browser, under this page's origin. It is never uploaded, and there is no account.
-            The consequence worth knowing: storage belongs to an <i>origin</i>, so the hosted page and the
-            helper's page are different stores. That is exactly why the hosted page hands the tab over on
-            arrival instead of running a session itself — one origin, one world, no surprises.</p>
-
-          <h3 id="d5">Networks that block things</h3>
-          <p><b>The relay is one setting and it carries everything.</b> Switched on, every download and
-            every connection the game itself makes — joining a server, authenticating, fetching skins —
-            travels inside ordinary HTTPS to the relay, which does the fetching and the dialling from
-            outside the network that is blocking you. It is a Cloudflare Worker; two of them are
-            deployed and built into the helper, so nobody has to run a command or make an account.</p>
-          <table>
-            <tr><th>What is blocked</th><th>What to do</th></tr>
-            <tr><td>Mojang is unreachable</td>
-              <td>Nothing: on <b>Automatic</b> the relay fetches for you over ordinary HTTPS and caches
-                what it fetched at the edge. A network that blocks Mojang is exactly what it exists for.</td></tr>
-            <tr><td>Minecraft servers are unreachable (only 443 gets out)</td>
-              <td>Also nothing, for the same reason: the game's connections ride inside the relay too.
-                Put the server in <b>Join this server</b> and the client joins it automatically. The relay
-                refuses any session that does not begin with a Minecraft handshake, because a relay that
-                dialled any port for any bytes would be a port scanner.</td></tr>
-            <tr><td>The relay's own hostname is blocked</td>
-              <td>It is asked for through a proxy you already run, if there is one, and there are two
-                hostnames to try. If neither answers you get a direct connection rather than an error.</td></tr>
-            <tr><td>Servers that refuse datacenter addresses</td>
-              <td>The relay dials from a datacenter, and some servers refuse those. That is the server's
-                choice and no relay can change it — try another server, or <b>Never</b> and a proxy of
-                your own.</td></tr>
-            <tr><td>A program you did not write is blocked</td>
-              <td>Nothing here changes that. AppLocker, WDAC, MDM, screen-time and parental controls are
-                enforced by the operating system, and no launcher can get around them. On such a machine
-                the only thing that runs is a launcher that installs nothing at all: the browser tier.</td></tr>
-          </table>
-
-          <h3 id="d6">More than one window</h3>
-          <p>Every PLAY is its own session, with its own sandbox, its own Java process and its own log.
-            Two windows can run at once, including two different versions, and stopping one does not touch
-            the other. Each finished session is stored and each deletes its own sandbox.</p>
-
-          <h3 id="d7">Mod loaders</h3>
-          <table>
-            <tr><th>Loader</th><th>State</th></tr>
-            <tr><td><b>Fabric</b></td><td>Works, for any version Fabric supports: mods are loaded at play
-              time by a real JVM, from jars you dropped here or from Modrinth.</td></tr>
-            <tr><td>Forge, NeoForge</td><td>Not supported yet: their builds resolve and their libraries
-              download, but neither ships a usable client jar — their installer runs a patching step over
-              Mojang's jar and their bootstrap refuses to start without it. Asking for one is refused with
-              that explanation rather than half-launched.</td></tr>
-          </table>
-
-          <h3 id="d8">When something goes wrong</h3>
-          <table>
-            <tr><th>Symptom</th><th>Cause and answer</th></tr>
-            <tr><td>Nothing happens when you press PLAY</td>
-              <td>No helper is running. The status panel offers the Shortcut, the download, or the link to
-                the helper's own page.</td></tr>
-            <tr><td>“no helper” although it is running</td>
-              <td>This browser blocked the request: use the helper's own page, or allow Local Network
-                Access for this site.</td></tr>
-            <tr><td>A launch fails with <code>Failed to connect</code> to Mojang</td>
-              <td>The network blocks it. Leave the relay on Automatic.</td></tr>
-            <tr><td>The game starts silent and textureless</td>
-              <td>Assets were skipped; 26.x will not even start without them. Turn them back on.</td></tr>
-            <tr><td>A crash</td>
-              <td>Read the log, or take the session zip: it holds the client's own log and any crash
-                report. <b>Copy diagnostics</b> puts everything worth pasting on your clipboard.</td></tr>
-          </table>
-          <hr>
-          <p class="note">The promise in one sentence: the game runs on your computer, from a directory
-            under <code>/tmp</code> that is deleted when it ends, while your world and your mods live in
-            your browser — so the machine is borrowed for an hour rather than changed.</p>
-        </div>
+    <section class="view column" id="viewDoc">
+      <div class="panel doc">
+        <p class="lead">WebMC is a Minecraft launcher whose interface is a web page, and whose promise is
+          that the computer it runs on is borrowed rather than used: the game, the Java runtime and the
+          helper are all deleted when the session ends.</p>
         <div class="toc">
-          <a href="#d1">Why the page cannot launch anything</a>
+          <a href="#d1">Why a page cannot launch anything</a>
           <a href="#d2">What the helper does</a>
           <a href="#d3">What is left afterwards</a>
           <a href="#d4">Where your world lives</a>
@@ -692,23 +458,94 @@
           <a href="#d7">Mod loaders</a>
           <a href="#d8">When something goes wrong</a>
         </div>
+        <h3 id="d1">Why a page cannot launch anything</h3>
+        <p>A web page cannot start a program, read a file, or look inside <code>/tmp</code>. There is no API
+          for it: WebAssembly and an in-page JVM are sandboxed, <code>file://</code> gives an opaque origin
+          that cannot even reach <code>127.0.0.1</code>, a custom protocol handler and a browser extension
+          both need an installer first, and a page has never been allowed to run a file it downloaded.</p>
+        <p>Local Network Access, in current Chromium, makes the boundary explicit. Measured from this
+          launcher on GitHub Pages to the helper on <code>127.0.0.1</code>: <code>fetch()</code> is refused
+          or prompts for permission, an <code>&lt;iframe&gt;</code> comes back with no child frame at all,
+          and a top-level navigation is <b>allowed</b> with no prompt. That last row is why the hosted page
+          hands the tab to the helper's own page the moment it loads.</p>
+        <h3 id="d2">What the helper does, step by step</h3>
+        <ol>
+          <li><b>One staging directory</b> under <code>/tmp</code>: a Python runtime if the machine has
+            none, the helper, and later the game.</li>
+          <li><b>A Java runtime, found or fetched.</b> The version's own metadata says which Java it needs,
+            and if this machine has nothing suitable one is fetched into the sandbox and dies with it.</li>
+          <li><b>The game, from Mojang.</b> Client, libraries and assets, every file verified against its
+            published SHA-1. On a filtered network these come through a relay, or straight through a proxy
+            you already run.</li>
+          <li><b>The loader and your mods.</b> Fabric's profile from Fabric's metadata; your jars from this
+            browser's storage, or fetched from Modrinth for the version you picked.</li>
+          <li><b>The real client starts</b> — an ordinary <code>java …KnotClient</code> process with a
+            normal window.</li>
+          <li><b>You watch it here,</b> in the log along the bottom.</li>
+          <li><b>When it exits</b> the helper collects saves, logs, screenshots and configuration into one
+            zip, this page takes it into browser storage, and the sandbox is deleted.</li>
+        </ol>
+        <h3 id="d3">What is left afterwards</h3>
+        <table>
+          <tr><th>How you start it</th><th>What remains</th></tr>
+          <tr><td><b>The WebMC Helper app</b>, double-clicked once</td><td>Two small files and a login item,
+            so it is always there. <b>Leave nothing</b> removes all of it.</td></tr>
+          <tr><td><b>The Shortcut</b> route</td><td>Nothing at all: the staging directory goes too.</td></tr>
+          <tr><td><b>Kept downloads</b>, if you ask for them</td><td>A cache of Mojang's files so the next
+            launch is quick. Named in the inventory, removed by <b>Leave nothing</b>.</td></tr>
+          <tr><td><b>Browser storage</b></td><td>Your world, mods and settings. The one thing that persists
+            on purpose.</td></tr>
+        </table>
+        <h3 id="d4">Where your world lives</h3>
+        <p>In this browser, under this page's origin, uploaded nowhere, with no account. Storage belongs to
+          an <i>origin</i>, which is why the hosted page hands the tab over instead of running a session
+          itself: one origin, one world, no surprises.</p>
+        <h3 id="d5">Networks that block things</h3>
+        <table>
+          <tr><th>What is blocked</th><th>What happens</th></tr>
+          <tr><td>Mojang is unreachable</td><td>On <b>Automatic</b> the relay fetches for you over ordinary
+            HTTPS. It is a Cloudflare Worker, deployed and built into the helper, so nobody runs a command
+            or makes an account.</td></tr>
+          <tr><td>Minecraft servers are unreachable</td><td>The game's connections ride inside the relay
+            too. Put the server in <b>Join this server</b> and the client joins it automatically.</td></tr>
+          <tr><td>A proxy is available</td><td>Downloads go straight through it: measured 0.88 MB/s against
+            0.41 MB/s through the relay, so the proxy wins when it can fetch from Mojang — which the helper
+            checks rather than assumes.</td></tr>
+          <tr><td>Programs you did not write are blocked</td><td>Nothing here changes that. AppLocker,
+            WDAC, MDM and parental controls are enforced by the operating system.</td></tr>
+        </table>
+        <h3 id="d6">More than one window</h3>
+        <p>Every PLAY is its own session with its own sandbox, Java process and log. Two windows can run at
+          once, including two versions, and stopping one does not touch the other.</p>
+        <h3 id="d7">Mod loaders</h3>
+        <p><b>Fabric</b> works for any version Fabric supports. <b>Forge and NeoForge</b> do not yet: their
+          installer patches Mojang's jar and their bootstrap refuses to start without that step, so asking
+          for one is refused with that explanation rather than half-launched.</p>
+        <h3 id="d8">When something goes wrong</h3>
+        <p>Read the log; it holds the client's own output, so a crash is readable instead of mysterious.
+          <b>Copy diagnostics</b> in Settings puts everything worth pasting on your clipboard, and the
+          session zip holds the client log and any crash report.</p>
+        <hr>
+        <p class="hint">The promise in one sentence: the game runs on your computer, from a directory under
+          <code>/tmp</code> that is deleted when it ends, while your world and your mods live in your
+          browser — so the machine is borrowed for an hour rather than changed.</p>
       </div>
     </section>
   </div>
 
   <div class="logbar">
-    <div class="stripline" id="drawerStripRow">
+    <div class="strip" id="drawerStripRow">
       <i class="dot" id="cdot2"></i>
       <b>Activity</b>
       <span class="phase" id="logState">waiting</span>
-      <span class="rail" id="drawerTrack"><i></i></span>
+      <span class="track" id="drawerTrack"><i></i></span>
       <span class="pct" id="drawerPct"></span>
       <button class="toggle" id="logHide">Show log</button>
     </div>
     <div class="logbody">
       <div class="logtools">
-        <b>Log</b><span class="note" id="logFor">no session</span><span style="flex:1"></span>
-        <button class="tiny ghost" id="logClear">Clear the view</button>
+        <b>Log</b><span class="hint" id="logFor">no session</span><span style="flex:1"></span>
+        <button class="btn small" id="logClear">Clear the view</button>
       </div>
       <div class="receipt" id="receipt"></div>
       <div class="console" id="log"><span class="d">The helper's log appears here — including
@@ -723,14 +560,15 @@ Minecraft's own, so a crash is readable instead of mysterious.</span></div>
     <p>Minecraft never becomes a web app here. A helper on this machine downloads the real client and the
       Java runtime into one directory under <code>/tmp</code>, starts it with Fabric, and when the session
       ends it hands the saves to your browser and deletes the directory.</p>
-    <p>This page cannot start a program, read a file, or see <code>/tmp</code> — the helper does that
-      part. <b>Documentation</b> in the tabs above has the long version.</p>
-    <div class="note" id="aboutkvs" style="margin-top:13px"></div>
-    <div style="margin-top:18px;text-align:right"><button id="aboutclose">Close</button></div>
+    <p>This page cannot start a program, read a file, or see <code>/tmp</code> — the helper does that part.
+      <b>Documentation</b> above has the long version.</p>
+    <div class="hint" id="aboutkvs" style="margin-top:12px"></div>
+    <div style="margin-top:16px;text-align:right"><button class="btn" id="aboutclose">Close</button></div>
   </div>
 </dialog>
 
 <script>
+
 
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -1714,6 +1552,37 @@ $("openlocal2").onclick = (e) => { e.preventDefault(); window.open("http://127.0
     if (!/exited|cancelled/i.test(st)) showRecovery(j);
   });
 })();
+
+
+
+// Mirror the version picker into the list on the left: a launcher-shaped way to choose, without
+// touching the select the rest of the script already understands.
+function buildVersionList(){
+  const select = $("version"), list = $("verList");
+  if (!select || !list) return;
+  const chosen = select.value;
+  list.innerHTML = "";
+  [...select.options].slice(0, 40).forEach((option) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.innerHTML = "<span>" + option.value + "</span><small>" +
+      (option.value === chosen ? "selected" : "") + "</small>";
+    if (option.value === chosen) item.className = "on";
+    item.onclick = () => {
+      select.value = option.value;
+      select.dispatchEvent(new Event("change"));
+      if (typeof updateFacts === "function") updateFacts();
+      buildVersionList();
+    };
+    list.appendChild(item);
+  });
+  if ($("verFoot")) $("verFoot").textContent = select.options.length + " versions from Mojang";
+}
+if ($("version")) {
+  $("version").addEventListener("change", () => setTimeout(buildVersionList, 50));
+  setTimeout(buildVersionList, 400);
+  setTimeout(buildVersionList, 1500);
+}
 
 </script>
 </body>
