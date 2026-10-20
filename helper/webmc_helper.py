@@ -870,6 +870,14 @@ class Registry:
         if requested is None:
             requested = getattr(self.cfg, "relay", None)
         cfg.relay = resolve_relay(requested, log=self.log)
+        if opts.get("cache"):
+            # Keeping Mojang's files is the difference between a launch that takes four minutes on a
+            # slow network and one that takes ten seconds, so it is worth asking for per session.
+            cfg.cache = os.path.expanduser("~/Library/Caches/webmc")
+            try:
+                os.makedirs(cfg.cache, exist_ok=True)
+            except OSError:
+                cfg.cache = None
         if opts.get("restricted"):
             cfg.restricted = True
         if opts.get("tunnelEverything"):
