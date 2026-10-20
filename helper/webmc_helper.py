@@ -117,13 +117,16 @@ RELAY_PREFIXES = (
 # Order matters: the first that answers /health wins, so list a spare. An empty tuple means the
 # helper simply downloads directly, which is what most networks want anyway.
 DEFAULT_RELAYS = (
-    # The relay this project deployed for everyone. On a network that blocks workers.dev it simply
-    # does not answer, and the helper downloads directly instead. Add a second URL here (a Render
-    # deployment, or your own domain) and the helper tries them in order.
+    # Relays this project deployed for everyone, on two different Cloudflare hostnames: one hostname
+    # can always be blocked, and a second is what makes "nobody has to deploy one" hold for more than
+    # one network. The helper probes them in order and uses the first that answers /health; if none
+    # does (a network that blocks Cloudflare entirely) it downloads directly, or through the
+    # visitor's own proxy when there is one. Add any URL here and it joins the list.
     "https://webmc-relay.webmc-helper.workers.dev",
+    "https://webmc-relay-pages.pages.dev",
 )
 
-_RELAY_CHOICE = {"probed": False, "url": None}
+_RELAY_CHOICE = {"probed": False, "url": None, "via": None}
 OFF = ("off", "none", "no", "direct", "-")
 
 
@@ -138,7 +141,194 @@ def relay_reachable(url, timeout=5):
         return False
 
 
-def resolve_relay(requested, log=None, timeout=5):
+def dns_query(name, qtype, timeout=5):
+    """One DNS question, answered by hand.
+
+    Python's standard library can resolve A records and nothing else, and Minecraft servers are
+    usually reached through an SRV record: play.example.net is a signpost, not an address. Asking the
+    question directly is the only way to follow that signpost without adding a dependency.
+    """
+    import random
+    labels = b"".join(bytes([len(part)]) + part.encode() for part in name.rstrip(".").split("."))
+    packet = (struct.pack("!HHHHHH", random.randrange(65535), 0x0100, 1, 0, 0, 0)
+              + labels + b"\x00" + struct.pack("!HH", qtype, 1))
+    for server in dns_servers():
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.settimeout(timeout)
+            sock.sendto(packet, (server, 53))
+            data, _ = sock.recvfrom(4096)
+        except Exception:
+            continue
+        finally:
+            sock.close()
+        return parse_dns_answers(data)
+    return []
+
+
+def dns_servers():
+    """Whatever this machine would ask, in order."""
+    servers = []
+    try:
+        with open("/etc/resolv.conf") as fh:
+            for line in fh:
+                if line.startswith("nameserver"):
+                    servers.append(line.split()[1])
+    except Exception:
+        pass
+    for fallback in ("1.1.1.1", "8.8.8.8"):
+        if fallback not in servers:
+            servers.append(fallback)
+    return servers
+
+
+def parse_dns_answers(data):
+    """(name, port, priority, weight) for every SRV record in a reply, best first."""
+    if len(data) < 12:
+        return []
+    _id, _flags, qd, an, _ns, _ar = struct.unpack("!HHHHHH", data[:12])
+    offset = 12
+
+    def skip_name(at):
+        while at < len(data):
+            length = data[at]
+            if length == 0:
+                return at + 1
+            if length & 0xC0:
+                return at + 2
+            at += 1 + length
+        return at
+
+    for _ in range(qd):
+        offset = skip_name(offset) + 4
+    answers = []
+    for _ in range(an):
+        if offset >= len(data):
+            break
+        offset = skip_name(offset)
+        if offset + 10 > len(data):
+            break
+        rtype, _rclass, _ttl, length = struct.unpack("!HHIH", data[offset:offset + 10])
+        offset += 10
+        body = data[offset:offset + length]
+        offset += length
+        if rtype != 33 or len(body) < 7:
+            continue
+        priority, weight, port = struct.unpack("!HHH", body[:6])
+        target = []
+        at = 6
+        while at < len(body) and body[at]:
+            size = body[at]
+            target.append(body[at + 1:at + 1 + size].decode("utf-8", "replace"))
+            at += 1 + size
+        answers.append((".".join(target), port, priority, weight))
+    answers.sort(key=lambda item: (item[2], -item[3]))
+    return answers
+
+
+def minecraft_srv(host, via_proxy=None, log=None):
+    """Where a Minecraft server really lives, or None if there is no signpost.
+
+    A filtered network poisons the resolver, so a local answer is not an answer: when the machine's
+    own DNS says nothing, the same question goes to a public resolver over HTTPS — through the proxy
+    or relay this session is already using, so it is asked over a connection the network cannot edit.
+    """
+    try:
+        for name, port, _priority, _weight in dns_query("_minecraft._tcp." + host, 33):
+            if name and not name.startswith("0.0.0.0"):
+                return name, int(port)
+    except Exception:
+        pass
+    for endpoint in ("https://cloudflare-dns.com/dns-query?name=_minecraft._tcp.%s&type=SRV" % host,
+                     "https://dns.google/resolve?name=_minecraft._tcp.%s&type=SRV" % host):
+        try:
+            answer = http_json(endpoint, via_proxy=via_proxy, timeout=15)
+        except Exception:
+            continue
+        for record in answer.get("Answer", []):
+            if record.get("type") != 33:
+                continue
+            parts = str(record.get("data", "")).split()
+            if len(parts) >= 4 and parts[3] not in (".", "", "0.0.0.0"):
+                if log:
+                    log("srv: %s is really %s:%s (a public resolver said so)" % (host, parts[3].rstrip("."), parts[2]))
+                return parts[3].rstrip("."), int(parts[2])
+    return None
+
+
+def http_json(url, body=None, via_proxy=None, timeout=10):
+    """GET a URL and parse JSON, through a SOCKS5 proxy when one is given.
+
+    The relay has to be probed the same way it will be used: on a network that blocks the relay's
+    hostname, the direct probe fails while the proxied one succeeds, and only the second answer is
+    the truth.
+    """
+    import ssl
+    parts = urllib.parse.urlsplit(url)
+    secure = parts.scheme in ("https", "wss")
+    host = parts.hostname
+    port = parts.port or (443 if secure else 80)
+    path = parts.path or "/"
+    if parts.query:
+        path += "?" + parts.query
+    if via_proxy:
+        sock = socks5_connect(via_proxy, host, port, timeout=timeout)
+    else:
+        sock = socket.create_connection((host, port), timeout=timeout)
+    try:
+        if secure:
+            sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
+        payload = json.dumps(body).encode() if body is not None else None
+        head = ("%s %s HTTP/1.1\r\nHost: %s\r\nAccept: application/json\r\n"
+                "User-Agent: %s/%s\r\nConnection: close\r\n"
+                % ("POST" if payload is not None else "GET", path, parts.netloc, NAME, VERSION))
+        if payload is not None:
+            head += "Content-Type: application/json\r\nContent-Length: %d\r\n" % len(payload)
+        sock.sendall((head + "\r\n").encode() + (payload or b""))
+        chunks = b""
+        while True:
+            data = sock.recv(65536)
+            if not data:
+                break
+            chunks += data
+            if len(chunks) > 2000000:
+                break
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+    head, _sep, body = chunks.partition(b"\r\n\r\n")
+    status = int(head.split(b" ")[1]) if b" " in head.split(b"\r\n")[0] else 0
+    if status != 200:
+        raise OSError("HTTP %s from %s" % (status, url))
+    if b"transfer-encoding: chunked" in head.lower():
+        # Nobody sends a Content-Length any more, and a chunk header in the middle of JSON reads as
+        # "Extra data: line 2" three layers up. Undo it here, once.
+        out, rest = b"", body
+        while True:
+            line, _sep2, rest = rest.partition(b"\r\n")
+            try:
+                size = int(line.split(b";")[0], 16)
+            except ValueError:
+                break
+            if size == 0:
+                break
+            out += rest[:size]
+            rest = rest[size + 2:]
+        body = out
+    return json.loads(body.decode("utf-8", "replace"))
+
+
+def http_get_json(url, via_proxy=None, timeout=10):
+    return http_json(url, via_proxy=via_proxy, timeout=timeout)
+
+
+def relay_reachable_via(url, via_proxy, timeout=10):
+    return bool(http_get_json(url.rstrip("/") + "/health", via_proxy=via_proxy, timeout=timeout).get("ok"))
+
+
+def resolve_relay(requested, log=None, timeout=5, via_proxy=None):
     """Decide which relay to use. "off" means none, a URL means that one, and nothing means the
     built-in list — probed once per helper, so a launch never pays for it twice."""
     if requested and str(requested).strip().lower() in OFF:
@@ -155,9 +345,24 @@ def resolve_relay(requested, log=None, timeout=5):
                 log("relay: using the built-in relay %s (say \"off\" to download directly)"
                     % _RELAY_CHOICE["url"])
             return _RELAY_CHOICE["url"]
+    # The relay's own hostname can be blocked while a proxy on this machine works. Then the relay is
+    # still the right answer: it resolves names out there, which is exactly what a poisoned DNS
+    # cannot do here. Ask it through the proxy before giving up on it.
+    for candidate in DEFAULT_RELAYS:
+        if via_proxy:
+            try:
+                if relay_reachable_via(candidate, via_proxy, timeout=max(timeout * 2, 12)):
+                    _RELAY_CHOICE["url"] = candidate.rstrip("/")
+                    _RELAY_CHOICE["via"] = via_proxy
+                    if log:
+                        log("relay: %s is not reachable from here, but it answers through %s, so that "
+                            "is what this session will use" % (candidate, via_proxy))
+                    return _RELAY_CHOICE["url"]
+            except Exception:
+                pass
     if DEFAULT_RELAYS and log:
-        log("relay: none of the %d built-in relays answered; downloading directly"
-            % len(DEFAULT_RELAYS))
+        log("relay: none of the %d built-in relays answered, directly or through a proxy; "
+            "downloading directly" % len(DEFAULT_RELAYS))
     return None
 
 
@@ -819,7 +1024,225 @@ class WebSocketError(RuntimeError):
     pass
 
 
-def ws_connect(url, timeout=20):
+def recv_exact(sock, count, timeout=30):
+    """Read exactly this many bytes, or fail. SOCKS has no concept of a short reply."""
+    sock.settimeout(timeout)
+    out = b""
+    while len(out) < count:
+        chunk = sock.recv(count - len(out))
+        if not chunk:
+            raise OSError("the connection closed before it had sent %d bytes" % count)
+        out += chunk
+    return out
+
+
+def parse_socks_url(url):
+    """socks5h://host:port -> (host, port, resolve_here). h means the proxy resolves names."""
+    import urllib.parse as _u
+    parts = _u.urlsplit(url if "://" in url else "socks5h://" + url)
+    if not parts.hostname:
+        raise ValueError("not a proxy address: %r" % url)
+    return parts.hostname, int(parts.port or 1080), parts.scheme.lower() == "socks5"
+
+
+def socks5_connect(proxy_url, host, port, timeout=30):
+    """Open a TCP connection to host:port *through* a SOCKS5 proxy that is already running.
+
+    This is the other half of what a relay does: a relay carries the connection over HTTPS for you,
+    this hands it to a proxy you already have (a VPN client, Shadowsocks, an SSH -D tunnel). The game
+    cannot tell the difference, and neither can the server.
+    """
+    proxy_host, proxy_port, resolve_here = parse_socks_url(proxy_url)
+    sock = socket.create_connection((proxy_host, proxy_port), timeout=timeout)
+    try:
+        # offer "no authentication" only: the proxies people actually run locally accept it, and a
+        # password prompt is not something this helper should be collecting
+        sock.sendall(b"\x05\x01\x00")
+        greeting = recv_exact(sock, 2, timeout)
+        if greeting[0] != 5:
+            raise OSError("that is not a SOCKS5 proxy (it answered version %d)" % greeting[0])
+        if greeting[1] != 0:
+            raise OSError("that proxy wants a username and password, which this helper does not ask for")
+        if resolve_here:
+            try:
+                address = socket.gethostbyname(host)
+            except Exception:
+                address = None
+            if address:
+                request = b"\x05\x01\x00\x01" + socket.inet_aton(address) + struct.pack("!H", int(port))
+            else:
+                request = (b"\x05\x01\x00\x03" + bytes([len(host)]) + host.encode()
+                           + struct.pack("!H", int(port)))
+        else:
+            request = (b"\x05\x01\x00\x03" + bytes([len(host)]) + host.encode()
+                       + struct.pack("!H", int(port)))
+        sock.sendall(request)
+        reply = recv_exact(sock, 4, timeout)
+        if reply[1] != 0:
+            reasons = {1: "general failure", 2: "not allowed by that proxy's rules", 3: "network unreachable",
+                       4: "host unreachable", 5: "connection refused", 6: "timed out", 7: "unsupported",
+                       8: "unsupported address"}
+            raise OSError("the proxy refused %s:%s: %s" % (host, port, reasons.get(reply[1], reply[1])))
+        if reply[3] == 1:
+            recv_exact(sock, 4, timeout)
+        elif reply[3] == 4:
+            recv_exact(sock, 16, timeout)
+        elif reply[3] == 3:
+            recv_exact(sock, recv_exact(sock, 1, timeout)[0], timeout)
+        recv_exact(sock, 2, timeout)
+        return sock
+    except Exception:
+        try:
+            sock.close()
+        except Exception:
+            pass
+        raise
+
+
+def pump_sockets(left, right, stop, log=None, label="proxy"):
+    """Copy bytes between two ordinary sockets until either closes. The non-relay half of bridge()."""
+    def copy(source, target):
+        try:
+            while not stop.is_set():
+                data = source.recv(32768)
+                if not data:
+                    break
+                target.sendall(data)
+        except Exception:
+            pass
+        finally:
+            stop.set()
+    threads = [threading.Thread(target=copy, args=(left, right), daemon=True),
+               threading.Thread(target=copy, args=(right, left), daemon=True)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3600)
+    for sock in (left, right):
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+class RelayDialer:
+    """A dialer whose connections are carried inside a WebSocket to a relay."""
+
+    kind = "relay"
+
+    def __init__(self, relay, log=print, via_proxy=None):
+        self.relay = relay.rstrip("/")
+        self.log = log
+        self.via_proxy = via_proxy
+        self._probed = None
+
+    def describe(self):
+        return "the relay %s" % self.relay
+
+    def sees(self):
+        return "the relay's address"
+
+    def _needs_proxy(self):
+        """A relay on a blocked hostname fails fast and for everybody: find out once, before dialling."""
+        if self._probed is None:
+            self._probed = False
+            if self.via_proxy:
+                try:
+                    parts = urllib.parse.urlsplit(self.relay)
+                    probe = socket.create_connection((parts.hostname, parts.port or 443), timeout=4)
+                    probe.close()
+                except Exception:
+                    self._probed = True
+                    self.log("relay: %s is not reachable from here; reaching it through %s"
+                             % (self.relay, self.via_proxy))
+        return self._probed
+
+    def attach(self, client, host, port, on_open=None):
+        return bridge(client, self.relay, host, port, self.log, on_open=on_open,
+                      via_proxy=self.via_proxy if self._needs_proxy() else None,
+                      keep_client=True)
+
+
+class SocksDialer:
+    """A dialer whose connections go through a SOCKS5 proxy the visitor already runs."""
+
+    kind = "socks"
+
+    def __init__(self, proxy_url, log=print):
+        self.proxy_url = proxy_url
+        self.log = log
+
+    def describe(self):
+        return "your own proxy at %s" % self.proxy_url
+
+    def sees(self):
+        return "your proxy's address"
+
+    def attach(self, client, host, port, on_open=None):
+        try:
+            far = socks5_connect(self.proxy_url, host, port)
+        except Exception as exc:  # noqa: BLE001
+            # Deliberately do not close the client: the caller answers it with a SOCKS failure, which
+            # is a sentence Java understands. A closed socket reads as "Malformed reply".
+            self.log("proxy: %s:%s could not be opened through %s: %s" % (host, port, self.proxy_url, exc))
+            return False
+        if on_open:
+            on_open()
+        stop = threading.Event()
+        threading.Thread(target=pump_sockets, args=(client, far, stop, self.log), daemon=True).start()
+        return True
+
+
+class DirectDialer:
+    """No proxy: the connection is made from this machine, which is what a normal network wants."""
+
+    kind = "direct"
+
+    def __init__(self, log=print):
+        self.log = log
+
+    def describe(self):
+        return "a direct connection"
+
+    def sees(self):
+        return "your own address"
+
+    def attach(self, client, host, port, on_open=None):
+        try:
+            far = socket.create_connection((host, int(port)), timeout=30)
+        except Exception as exc:  # noqa: BLE001
+            self.log("direct: %s:%s could not be reached: %s" % (host, port, exc))
+            return False
+        if on_open:
+            on_open()
+        stop = threading.Event()
+        threading.Thread(target=pump_sockets, args=(client, far, stop, self.log), daemon=True).start()
+        return True
+
+
+def make_dialer(relay=None, socks=None, log=print, via_proxy=None):
+    """One decision, in one place: how does the game's network traffic leave this machine?
+
+    A relay when there is one (it works on networks that block game ports), the visitor's own proxy if
+    they have one, and a direct connection otherwise.
+    """
+    if relay:
+        if socks:
+            log("game traffic: going through %s, reached via %s" % (relay, socks))
+        return RelayDialer(relay, log=log, via_proxy=via_proxy)
+    if socks:
+        return SocksDialer(socks, log=log)
+    return DirectDialer(log=log)
+
+
+def dialer_from(value, log=print):
+    """Accept either a dialer or a bare relay URL, so older callers keep working."""
+    if value is None or isinstance(value, (RelayDialer, SocksDialer, DirectDialer)):
+        return value
+    return RelayDialer(str(value), log=log)
+
+
+def ws_connect(url, timeout=20, via_proxy=None):
     """The smallest WebSocket client that can carry a byte stream: handshake, frames, ping/pong.
 
     Python's standard library has no WebSocket client, and this file aims to depend on nothing but
@@ -833,7 +1256,12 @@ def ws_connect(url, timeout=20):
     path = parts.path or "/"
     if parts.query:
         path += "?" + parts.query
-    sock = socket.create_connection((host, port), timeout=timeout)
+    if via_proxy:
+        # Reach the relay itself through a proxy this machine already has. Useful when the network
+        # blocks the relay's own hostname but a proxy on 127.0.0.1 answers, which is a common shape.
+        sock = socks5_connect(via_proxy, host, port, timeout=timeout)
+    else:
+        sock = socket.create_connection((host, port), timeout=timeout)
     if secure:
         sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
     key = base64.b64encode(os.urandom(16)).decode()
@@ -922,24 +1350,24 @@ def _ws_lock_for(sock):
         return lock
 
 
-def bridge(client, relay, host, port, log, on_open=None, timeout=120):
+def bridge(client, relay, host, port, log, on_open=None, timeout=120, via_proxy=None,
+           keep_client=False):
     """Carry one TCP connection through the relay: the piece both the tunnel and the SOCKS proxy need.
 
     Returns True once the relay said it was ready, False if it could not be reached at all.
     """
     relay_host = relay.rstrip("/")
     try:
-        body = json.dumps({"host": host, "port": int(port)}).encode()
-        req = urllib.request.Request(
-            relay_host.replace("ws://", "http://").replace("wss://", "https://") + "/v1/token",
-            data=body, headers={"Content-Type": "application/json",
-                                "User-Agent": "%s/%s" % (NAME, VERSION)})
-        with urllib.request.urlopen(req, timeout=30) as response:
-            token = json.loads(response.read().decode("utf-8", "replace")).get("token")
+        # The token request goes the same way the socket will. Through a proxy when that is the only
+        # route to the relay, or it would fail with a connection refused nobody could explain.
+        answer = http_json(relay_host.replace("ws://", "http://").replace("wss://", "https://")
+                           + "/v1/token", body={"host": host, "port": int(port)},
+                           via_proxy=via_proxy, timeout=30)
+        token = answer.get("token")
         if not token:
             raise WebSocketError("the relay did not issue a token")
         ws_url = relay_host.replace("https://", "wss://").replace("http://", "ws://") + "/v1/connect"
-        sock = ws_connect(ws_url)
+        sock = ws_connect(ws_url, via_proxy=via_proxy)
         ws_send(sock, json.dumps({"t": "open", "v": 1, "token": token, "host": host,
                                   "port": int(port)}).encode(), opcode=1)
         for _ in range(20):
@@ -960,10 +1388,11 @@ def bridge(client, relay, host, port, log, on_open=None, timeout=120):
             raise WebSocketError("the relay never said it was ready")
     except Exception as exc:  # noqa: BLE001
         log("relay: %s:%s could not be reached: %s" % (host, port, exc))
-        try:
-            client.close()
-        except Exception:
-            pass
+        if not keep_client:
+            try:
+                client.close()
+            except Exception:
+                pass
         return False
 
     if on_open:
@@ -1028,15 +1457,17 @@ class SocksBridge:
     advance. It needs no administrator and touches nothing outside the session.
     """
 
-    def __init__(self, relay, port=0, log=print):
-        self.relay = relay
+    def __init__(self, dialer, port=0, log=print):
+        # A relay URL or any dialer, so the game can be pointed at this proxy whether the way out
+        # is a relay, the visitor's own proxy, or a direct connection.
+        self.dialer = dialer_from(dialer, log=log)
+        self.relay = getattr(self.dialer, "relay", None)
         self.port = int(port or 0)
         self.log = log
         self.server = None
         self.thread = None
         self.running = False
         self.connections = 0
-
     def start(self):
         self.server = socket.socket()
         self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1056,7 +1487,7 @@ class SocksBridge:
         self.thread = threading.Thread(target=accept, daemon=True)
         self.thread.start()
         self.log("proxy: SOCKS5 on 127.0.0.1:%d, every connection carried by %s"
-                 % (self.port, self.relay))
+                 % (self.port, self.dialer.describe()))
         return self.port
 
     def stop(self):
@@ -1095,9 +1526,18 @@ class SocksBridge:
                 client.close()
                 return
             port = struct.unpack("!H", client.recv(2))[0]
-            # the relay does the dialling, so "success" is the relay's answer, not ours
-            ok = bridge(client, self.relay, host, port, self.log,
-                        on_open=lambda: self._count(host, port))
+            def opened():
+                # The reply the SOCKS client is blocked on. Without it the game waits for an answer
+                # that never comes, then reads server bytes as if they were that answer.
+                self._count(host, port)
+                try:
+                    client.sendall(b"\x05\x00\x00\x01" + socket.inet_aton("0.0.0.0")
+                                   + struct.pack("!H", 0))
+                except Exception:
+                    pass
+
+            # whichever dialer it is, it says when the far end is up
+            ok = self.dialer.attach(client, host, port, on_open=opened)
             if not ok:
                 client.sendall(b"\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00")
         except Exception:
@@ -1108,9 +1548,7 @@ class SocksBridge:
 
     def _count(self, host, port):
         self.connections += 1
-        self.log("proxy: %s:%s is open through the relay" % (host, port))
-
-
+        self.log("proxy: %s:%s is open through %s" % (host, port, self.dialer.describe()))
 class Tunnel:
     """One Minecraft server, reachable at 127.0.0.1:<local port> through a relay.
 
@@ -1118,8 +1556,9 @@ class Tunnel:
     the relay inside a WebSocket, and the relay dials the real server.
     """
 
-    def __init__(self, relay, host, port, local_port=0, log=print):
-        self.relay = relay.rstrip("/")
+    def __init__(self, dialer, host, port, local_port=0, log=print):
+        self.dialer = dialer_from(dialer, log=log)
+        self.relay = getattr(self.dialer, "relay", None)
         self.host = host
         self.port = int(port)
         self.local_port = int(local_port or 0)
@@ -1128,7 +1567,6 @@ class Tunnel:
         self.thread = None
         self.running = False
         self.connections = 0
-
     def _token(self):
         import urllib.request
         body = json.dumps({"host": self.host, "port": self.port}).encode()
@@ -1144,13 +1582,13 @@ class Tunnel:
         return token
 
     def _pump(self, client):
-        """One game connection: open a relay socket, then copy bytes both ways."""
-        bridge(client, self.relay, self.host, self.port, self.log, on_open=self._opened)
+        """One game connection: open the far end however the dialer does, then copy both ways."""
+        self.dialer.attach(client, self.host, self.port, on_open=self._opened)
 
     def _opened(self):
         self.connections += 1
-        self.log("tunnel: %s:%d is open through the relay" % (self.host, self.port))
-
+        self.log("tunnel: %s:%d is open through %s"
+                 % (self.host, self.port, self.dialer.describe()))
     def _pump_unused(self, client):
         try:
             token = self._token()
@@ -1232,8 +1670,9 @@ class Tunnel:
                 pass
 
     def start(self):
-        if not self.relay:
-            raise WebSocketError("a relay URL is needed to tunnel a server (Settings → relay)")
+        if self.dialer is None:
+            raise WebSocketError("tunnelling a server needs a relay or a proxy "
+                                 "(Settings → If a network blocks things)")
         self.server = socket.socket()
         self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server.bind(("127.0.0.1", self.local_port))
@@ -1252,7 +1691,7 @@ class Tunnel:
         self.thread = threading.Thread(target=accept, daemon=True)
         self.thread.start()
         self.log("tunnel: %s:%d will be reachable at 127.0.0.1:%d through %s"
-                 % (self.host, self.port, self.local_port, self.relay))
+                 % (self.host, self.port, self.local_port, self.dialer.describe()))
         return self.local_port
 
     def stop(self):
@@ -1304,6 +1743,7 @@ class Session:
         self.pending_mods = []      # jars the page pushed in, waiting for a launch
         self.tunnel = None          # a server carried to us through a relay, when asked for
         self.socks = None           # a local SOCKS5 proxy the game itself is pointed at
+        self.dialer = None          # how the game's own connections leave this machine
         self.quick_play = None      # 127.0.0.1:<port>, handed to the client to join
         self.java = None
         self.java_major = 0
@@ -1577,33 +2017,54 @@ class Session:
             local += self._pending_mod_paths()
             mods += self._local_mods(local)
 
-            # ---- everything the game connects to, through the relay
-            if opts.get("tunnelEverything") or self.cfg.proxy_game:
-                if not self.cfg.relay:
-                    self.log("a proxy needs a relay URL (Settings → Proxy), so it is off")
+            # ---- how the game's traffic leaves this machine, decided once and said out loud
+            wants_proxy = bool(opts.get("tunnelEverything") or self.cfg.proxy_game)
+            server = (opts.get("tunnelServer") or "").strip()
+            game_socks = self.cfg.game_proxy or self.cfg.proxy
+            if (wants_proxy or server or self.cfg.relay) and not game_socks:
+                found = detect_proxy(None, lambda m: None)
+                if found:
+                    self.log("a proxy is already running here (%s), so this session will use it" % found)
+                    game_socks = found
+            self.cfg.relay = resolve_relay(self.cfg.relay, log=self.log, via_proxy=game_socks)
+            relay_via = _RELAY_CHOICE.get("via") or (game_socks if self.cfg.relay else None)
+            self.dialer = make_dialer(relay=self.cfg.relay, socks=game_socks, log=self.log,
+                                      via_proxy=relay_via)
+
+            if wants_proxy:
+                if self.dialer.kind == "direct":
+                    self.log("the game would connect directly: give it a relay or a proxy first "
+                             "(Settings → If a network blocks things)")
                 else:
                     try:
-                        self.socks = SocksBridge(self.cfg.relay, log=self.log)
+                        self.socks = SocksBridge(self.dialer, log=self.log)
                         self.socks_port = self.socks.start()
+                        self.log("the game's own connections will go through %s; the server will see %s"
+                                 % (self.dialer.describe(), self.dialer.sees()))
                     except Exception as exc:  # noqa: BLE001
                         self.log("could not start the proxy: %s" % exc)
                         self.socks = None
 
-            # ---- a server through the relay, if one was asked for
-            server = (opts.get("tunnelServer") or "").strip()
+            # ---- one server, carried to us, if one was asked for
             if server:
                 host, _sep, port = server.rpartition(":")
                 if not host or not port.isdigit():
                     self.log("that server address is not host:port - ignoring %r" % server)
                 else:
                     try:
-                        self.tunnel = Tunnel(self.cfg.relay, host, int(port),
+                        # servers are often a signpost: the name in the handshake stays the same, but
+                        # the connection has to go where the SRV record points
+                        real = minecraft_srv(host, via_proxy=_RELAY_CHOICE.get("via") or self.cfg.proxy,
+                                             log=self.log)
+                        dial_host, dial_port = (real[0], real[1]) if real else (host, int(port))
+                        self.tunnel = Tunnel(self.dialer, dial_host, dial_port,
                                              local_port=int(opts.get("tunnelPort") or 0),
                                              log=self.log)
                         local = self.tunnel.start()
                         self.quick_play = "127.0.0.1:%d" % local
-                        self.log("the game will join %s, which the relay carries to %s:%s"
-                                 % (self.quick_play, host, port))
+                        self.log("the game will join %s; that is carried to %s:%s through %s, so the "
+                                 "server will see %s" % (self.quick_play, host, port,
+                                                         self.dialer.describe(), self.dialer.sees()))
                     except Exception as exc:  # noqa: BLE001
                         self.log("could not tunnel %s: %s" % (server, exc))
                         self.tunnel = None
@@ -3445,6 +3906,10 @@ def parse_args(argv):
     ap.add_argument("--java", default=None, help="java executable to use")
     ap.add_argument("--proxy", default=None,
                     help="SOCKS/HTTP proxy for downloads, or 'none' (default: auto)")
+    ap.add_argument("--game-proxy", default=os.environ.get("WEBMC_GAME_PROXY") or None, metavar="URL",
+                    help="how the game's own connections leave this machine: a SOCKS5 URL like "
+                         "socks5h://127.0.0.1:1080. Defaults to --proxy, then to a proxy found on the "
+                         "usual ports, then to a direct connection")
     ap.add_argument("--proxy-game", action="store_true",
                     help="also send the game's own connections through the relay: a local SOCKS5"
                          " proxy, with the JVM pointed at it, so servers, sign-in and skins work"
@@ -3706,6 +4171,7 @@ def main(argv=None):
             "loaderKind": args.loader_kind,
             "relay": args.relay,
             "tunnelEverything": args.proxy_game,
+            "gameProxy": args.game_proxy,
             "restricted": args.restricted,
             "mods": [m.strip() for m in (args.mods or "").split(",") if m.strip()],
             "localMods": list(args.mod_jar or []),

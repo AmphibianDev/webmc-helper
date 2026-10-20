@@ -462,7 +462,10 @@
               <option value="custom">My own relay…</option>
             </select></div>
           <div><label for="server">Join this server straight away (optional)</label>
-            <input id="server" placeholder="play.example.net:25565" /></div>
+            <input id="server" placeholder="play.example.net:25565" />
+            <span class="hint" style="display:block;margin-top:7px">SRV records are followed, so a
+              name that is only a signpost still works. Servers that refuse datacenter addresses can
+              still refuse this one — that is the server's choice, not something a relay can change.</span></div>
           <div><label>&nbsp;</label>
             <button id="relayTest" style="width:100%">Test the relay</button></div>
         </div>
@@ -483,9 +486,13 @@
         </div>
         <label class="check" style="margin-top:16px">
           <input type="checkbox" id="proxyAll" />
-          <span>Send the game through the relay as well
-            <span class="hint" style="display:block">Tick this if you can download the game but cannot
-              join a server: the game's own connections then travel inside the relay too.</span></span>
+          <span>Let the game join servers through this
+            <span class="hint" style="display:block">Everything the game connects to — joining,
+              authenticating, skins — leaves through the relay, or through a proxy you already run if
+              there is one (a VPN client, Shadowsocks, an SSH tunnel on the usual ports). <b>The server
+              then sees the relay's address instead of yours.</b> This is what makes joining work on a
+              network that blocks game ports, and it is also what a filter would see as a plain HTTPS
+              connection — nothing is disguised beyond that.</span></span>
         </label>
         <details style="margin-top:18px">
           <summary>Advanced: restricted mode</summary>
@@ -627,7 +634,9 @@
               uses it, resolving names at the proxy, or takes <code>--proxy socks5h://host:port</code>.</td></tr>
           <tr><td>Mojang is unreachable</td>
             <td><b>Automatic.</b> The launcher's own relay fetches for you over ordinary HTTPS, from
-              Cloudflare instead of from this machine, and caches what it fetched at the edge. A
+              Cloudflare instead of from this machine, and caches what it fetched at the edge. A network that blocks the relay's own hostname is
+              answered with the same relay somewhere it does not — the Worker and a Node version
+              of it are both in this repository. A
               network that blocks Mojang is exactly what it exists for, so nobody has to deploy
               anything. <b>Settings → Relay → My own relay</b> points it at one you deployed instead,
               and <b>Never</b> turns it off.</td></tr>

@@ -3,3 +3,10 @@ __pycache__/
 tests/hello-mod/out/
 tests/hello-mod/hello-mod.jar
 .DS_Store
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
