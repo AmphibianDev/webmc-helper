@@ -271,6 +271,56 @@ and boring:
 ## What it does not do
 
 * **No online-mode login.** Offline usernames only; premium servers will reject the join.
+## The relay, if a network blocks things
+
+Optional, one deployment, and it is the difference between "the game will not download" and a normal
+session on a network that blocks Mojang or game ports. It is a Cloudflare Worker: it fetches from
+Cloudflare's network instead of yours, and it dials a Minecraft server on your behalf.
+
+```bash
+cd webmc-helper
+npx wrangler deploy relay/relay.js --name webmc-relay --compatibility-date 2026-01-01
+```
+
+That needs a free Cloudflare account and a browser login the first time (`npx wrangler login`). It
+prints a URL like `https://webmc-relay.you.workers.dev`; paste it into **Settings → If a network
+blocks things → Relay address** and press **Test the relay**.
+
+Check it from the command line, from the network that was blocked:
+
+```bash
+python3 relay/test-relay.py https://webmc-relay.you.workers.dev
+```
+
+It asks the relay for Mojang's version list (the check that proves the block is gone), confirms the
+policy refusals, gets a token for a real server, and asks a real server for its status through the
+tunnel. It uses the same tunnel code the launcher does, so a pass there is a pass in the game.
+
+What it does:
+
+| Route | What happens |
+|---|---|
+| `/<prefix>/<path>` | Mapped to the real host (`piston-meta`, `piston-data`, `resources`, `libraries`, `fabric-maven`, `fabric-meta`, `forge-maven`, `neoforge-maven`, `modrinth`, `adoptium`), streamed back, and cached at Cloudflare's edge, so the origin is hit once per file rather than once per visitor. |
+| `POST /v1/token` | A signed, two-minute token for one host and port. |
+| `GET /v1/connect` | A WebSocket speaking `goldproxy.v1`: the game's bytes travel inside ordinary HTTPS. |
+| `GET /health` | What this deployment offers — what the page's **Test the relay** button reads. |
+
+It also refuses to be a port scanner: a session has to open with a Minecraft handshake, the port has
+to be one this relay dials, and private, loopback, link-local and cloud-metadata addresses are
+refused. The knobs, if you want them (wrangler variables):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RELAY_SECRET` | a fixed development string | Signing key for tokens. **Set this** on a public deployment. |
+| `RELAY_ALLOWED_PORTS` | 25565, 25566, 25567, 25568, 25575, 25585, 19132 | Ports a session may dial. |
+| `RELAY_ALLOW_PRIVATE` | `0` | `1` allows LAN and loopback targets. |
+| `RELAY_ALLOW_ANY_PORT` | `0` | `1` stops enforcing the port allowlist. |
+| `RELAY_MAX_SECONDS` | `1800` | Longest a single session may live. |
+
+The helper uses it when it is given `--relay URL` (downloads), `--server HOST:PORT` (a server to join
+through the tunnel) or `--proxy-game` (the game's own connections). The launcher's Settings panel
+sets all three from the one URL, which is the whole point of it being one setting.
+
 * **Nothing runs anywhere but here.** No server session, no stream, no relay — see
   `webmc-port/COMPLIANCE.md` for why that line is not crossed.
 * **No telemetry, no uploads.** The session zip goes into the browser's own storage and nowhere else.

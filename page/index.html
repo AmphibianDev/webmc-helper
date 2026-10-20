@@ -464,8 +464,11 @@
         </div>
         <div class="hint" id="relayState" style="margin-top:10px"></div>
         <div class="hint" style="margin-top:10px">
-          Deploy it once with <code>npx wrangler deploy relay/relay.js --name webmc-relay</code>, paste
-          the URL, and it is used for everything here — no other setting is needed.
+          Deploy it once with
+          <code>npx wrangler deploy relay/relay.js --name webmc-relay --compatibility-date 2026-01-01</code>,
+          paste the URL, and it is used for everything here — downloads, the game's own connections
+          and the server below. No other setting is needed. Check it from the blocked network with
+          <code>python3 relay/test-relay.py YOUR-URL</code>.
         </div>
         <label class="check" style="margin-top:16px">
           <input type="checkbox" id="proxyAll" />

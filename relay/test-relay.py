@@ -1,138 +1,175 @@
 #!/usr/bin/env python3
-"""A stand-in for the Cloudflare Worker, so the helper's --relay path can be tested with no
-network to Mojang at all (which is the situation it exists for).
+"""Check a deployed WebMC relay, and say plainly what it does and does not do.
 
-It answers the same prefixes as relay/relay.js and serves the files a launch needs out of a local
-cache that a previous, working launch left behind:
+    python3 relay/test-relay.py https://webmc-relay.you.workers.dev
 
-    python3 relay/test-relay.py --root ~/Library/Caches/webmc --port 8787
-    python3 helper/webmc_helper.py --launch --relay http://127.0.0.1:8787 \
-        --root /tmp/webmc-relay-test --no-assets
-
-Nothing here is part of the real thing: the Worker fetches from the internet and caches at the edge.
-This fetches from a directory and is only here to prove the helper talks to a relay correctly.
+Everything here is run from this machine, over ordinary HTTPS, so it answers the question that
+matters: from a network that blocks Mojang, can the relay still hand me the game? It uses the same
+Tunnel and WebSocket code the launcher uses, so a pass here is a pass there.
 """
 
-import argparse
 import json
 import os
+import socket
+import struct
 import sys
-import urllib.parse
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import time
+import urllib.error
+import urllib.request
 
-PREFIXES = ("piston-meta", "piston-data", "resources", "libraries", "fabric-maven",
-            "fabric-meta", "forge-maven", "neoforge-maven", "modrinth", "adoptium")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "helper"))
+
+PASS, FAIL, INFO = "PASS", "FAIL", "    "
+results = []
 
 
-class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-    root = None
-    version = "1.21.11"
-    loader = "0.19.5"
+def say(state, what, detail=""):
+    results.append(state == PASS)
+    line = "  %-4s %s" % (state, what)
+    if detail:
+        line += "  — " + str(detail)
+    print(line)
 
-    def log_message(self, fmt, *args):
-        sys.stderr.write("  relay <- %s\n" % (fmt % args))
 
-    # ------------------------------------------------------------------ helpers
-    def _send(self, code, blob, ctype="application/octet-stream", head=False):
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(blob)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        if not head:
-            self.wfile.write(blob)
+def http(url, data=None, method=None, timeout=25):
+    request = urllib.request.Request(
+        url, data=json.dumps(data).encode() if data is not None else None,
+        headers={"Content-Type": "application/json", "User-Agent": "webmc-relay-test"},
+        method=method or ("POST" if data is not None else "GET"))
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read(200000), dict(response.headers)
+    except urllib.error.HTTPError as err:
+        return err.code, err.read(200000), dict(err.headers)
 
-    def _json(self, code, obj, head=False):
-        self._send(code, json.dumps(obj).encode(), "application/json", head)
 
-    def _file(self, path, head=False):
-        if path and os.path.isfile(path):
-            with open(path, "rb") as fh:
-                self._send(200, fh.read(), head=head)
-            return True
-        return False
+def varint(value):
+    out = b""
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        out += bytes([byte | (0x80 if value else 0)])
+        if not value:
+            return out
 
-    # ------------------------------------------------------------------ routing
-    def _serve(self, head):
-        parts = urllib.parse.urlsplit(self.path)
-        bits = [b for b in parts.path.split("/") if b]
-        query = urllib.parse.parse_qs(parts.query)
-        if not bits:
-            self._json(200, {"ok": True, "service": "webmc test relay",
-                             "prefixes": list(PREFIXES)}, head)
-            return
-        prefix, rest = bits[0], bits[1:]
-        root, version = self.root, self.version
-        if prefix not in PREFIXES:
-            self._json(404, {"error": "unknown prefix", "prefix": prefix}, head)
-            return
 
-        # ---- the files a launch asks for, in the order it asks for them
-        if prefix == "piston-meta" and rest == ["mc", "game", "version_manifest_v2.json"]:
-            self._json(200, {
-                "latest": {"release": version, "snapshot": version},
-                "versions": [{"id": version, "type": "release",
-                              "url": "http://%s/piston-meta/%s.json" % (self.headers.get("Host"), version)}],
-            }, head)
-            return
-        if prefix == "piston-meta" and rest == ["%s.json" % version]:
-            if self._file(os.path.join(root, "versions", "%s.json" % version), head):
-                return
-        if prefix == "piston-data" and len(rest) >= 3 and rest[0] == "v1" and rest[1] == "objects":
-            if self._file(os.path.join(root, "versions", rest[-1]), head):
-                return
-        if prefix == "resources" and len(rest) == 2:
-            if self._file(os.path.join(root, "assets", "objects", rest[0], rest[1]), head):
-                return
-        if prefix == "libraries":
-            if self._file(os.path.join(root, "libraries", *rest), head):
-                return
-        if prefix == "fabric-meta" and rest == ["v2", "versions", "loader", version]:
-            self._json(200, [{"loader": {"version": self.loader, "stable": True},
-                              "intermediary": {"version": version}, "launcherMeta": {}}], head)
-            return
-        if prefix == "fabric-meta" and len(rest) == 6 and rest[-1] == "json":
-            if self._file(os.path.join(root, "fabric", "%s-%s.json" % (version, rest[4])), head):
-                return
-        if prefix == "fabric-maven":
-            if self._file(os.path.join(root, "libraries", *rest), head):
-                return
-        if prefix == "adoptium":
-            self._json(404, {"error": "this test relay does not serve JREs"}, head)
-            return
-        if prefix == "modrinth":
-            self._json(200, {"hits": []}, head)
-            return
+def handshake(host, port, state=1, protocol=767):
+    body = (varint(0) + varint(protocol) + varint(len(host)) + host.encode()
+            + struct.pack(">H", port) + varint(state))
+    return varint(len(body)) + body
 
-        self._json(404, {"error": "not in this test relay", "path": parts.path}, head)
 
-    def do_GET(self):
-        self._serve(False)
-
-    def do_HEAD(self):
-        self._serve(True)
+def status_of(relay, host, port=25565, seconds=12):
+    """Ask a real Minecraft server for its status, through the relay."""
+    import webmc_helper as helper
+    seen = []
+    tunnel = helper.Tunnel(relay, host, port, log=seen.append)
+    local = tunnel.start()
+    try:
+        conn = socket.create_connection(("127.0.0.1", local), timeout=seconds)
+        conn.sendall(handshake(host, port) + varint(1) + varint(0))   # status request
+        conn.settimeout(seconds)
+        blob = b""
+        deadline = time.time() + seconds
+        while time.time() < deadline and b"description" not in blob and b'"version"' not in blob:
+            chunk = conn.recv(65536)
+            if not chunk:
+                break
+            blob += chunk
+        conn.close()
+        return blob, seen
+    finally:
+        tunnel.stop()
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default=os.path.expanduser("~/Library/Caches/webmc"))
-    ap.add_argument("--port", type=int, default=8787)
-    ap.add_argument("--version", default="1.21.11")
-    ap.add_argument("--loader", default="0.19.5")
-    args = ap.parse_args()
-    Handler.root, Handler.version, Handler.loader = args.root, args.version, args.loader
-    missing = [p for p in ("versions/%s.json" % args.version, "versions/client.jar",
-                           "fabric/%s-%s.json" % (args.version, args.loader))
-               if not os.path.exists(os.path.join(args.root, p))]
-    if missing:
-        print("this relay needs a warm cache first (missing: %s)" % ", ".join(missing))
-        print("run one normal launch with --cache, then start the relay")
+    relay = (sys.argv[1] if len(sys.argv) > 1 else "").rstrip("/")
+    if not relay.startswith("http"):
+        print(__doc__)
+        return 2
+    print("Checking %s\n" % relay)
+
+    try:
+        status, body, _ = http(relay + "/health")
+    except Exception as err:
+        print("  FAIL  the relay could not be reached at all  — %s" % str(err)[:90])
+        print("\n  Is it deployed, and is the URL exact? (no trailing slash, https://…)")
         return 1
-    httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    print("test relay on http://127.0.0.1:%d serving %s (nothing reaches Mojang)" % (args.port, args.root))
-    httpd.serve_forever()
-    return 0
+    health = {}
+    try:
+        health = json.loads(body)
+    except Exception:
+        pass
+    say(PASS if status == 200 and health.get("ok") else FAIL, "the relay answers at /health",
+        "..".join(health.get("files", []))[:70])
+    if not health.get("ok"):
+        print("\nThat is not a WebMC relay, or it is not deployed yet.")
+        return 1
+    say(PASS if health.get("tunnel") else FAIL, "it offers the TCP tunnel",
+        "protocol %s, ports %s" % (health.get("protocol"), health.get("ports")))
+
+    # The reason most people deploy this: Mojang is blocked, and the relay is not.
+    status, body, headers = http(relay + "/piston-meta/mc/game/version_manifest_v2.json")
+    manifest = {}
+    try:
+        manifest = json.loads(body)
+    except Exception:
+        pass
+    ok = status == 200 and isinstance(manifest.get("versions"), list)
+    say(PASS if ok else FAIL, "it fetches the Minecraft version list from Mojang",
+        "%s, %d versions, via %s" % (status, len(manifest.get("versions", [])),
+                                     headers.get("X-Relayed-From", "?")))
+    if ok:
+        newest = manifest.get("latest", {}).get("release")
+        say(PASS, "and the newest release is", str(newest))
+
+    status, body, _ = http(relay + "/v1/token", data={"host": "127.0.0.1", "port": 25565})
+    say(PASS if status == 403 else FAIL, "it refuses a private address",
+        json.loads(body).get("error", status) if body else status)
+
+    status, body, _ = http(relay + "/v1/token", data={"host": "play.example.net", "port": 22})
+    say(PASS if status == 403 else FAIL, "it refuses a port that is not Minecraft's",
+        json.loads(body).get("error", status) if body else status)
+
+    status, body, _ = http(relay + "/v1/token", data={"host": "mc.hypixel.net", "port": 25565})
+    token = {}
+    try:
+        token = json.loads(body)
+    except Exception:
+        pass
+    say(PASS if status == 200 and token.get("token") else FAIL, "it issues a signed token for a real server",
+        "expires in %ds" % max(0, token.get("expiresAt", 0) - time.time()) if token else status)
+
+    print("\n  Asking a real Minecraft server for its status, through the relay…")
+    try:
+        blob, seen = status_of(relay, "mc.hypixel.net")
+        text = blob.decode("utf-8", "replace")
+        if '"description"' in text or '"version"' in text:
+            start = text.find("{")
+            try:
+                info = json.loads(text[start:text.rfind("}") + 1])
+                say(PASS, "a real server answered through the relay",
+                    "players %s/%s" % (info.get("players", {}).get("online"),
+                                       info.get("players", {}).get("max")))
+            except Exception:
+                say(PASS, "a real server answered through the relay", text[:60])
+        else:
+            say(INFO, "the test server did not answer (it may block proxies; not a relay fault)",
+                text[:60].replace("\n", " ") or "no bytes")
+    except Exception as err:
+        say(INFO, "the test server could not be reached through the relay", str(err)[:70])
+
+    print()
+    if all(results):
+        print("  Everything this machine can check, passes.")
+        print("\n  In the launcher: Settings → If a network blocks things → Relay address")
+        print("    %s" % relay)
+        print("  Press “Test the relay”, then PLAY. Downloads go through the relay from now on;")
+        print("  put a server in “Join this server” and tick “Send the game through the relay” if")
+        print("  game ports are blocked too.")
+        return 0
+    print("  Something failed — the first FAIL above is the one to fix.")
+    return 1
 
 
 if __name__ == "__main__":
