@@ -50,6 +50,7 @@ transfers, which is exactly what a poisoned resolver needs.
 """
 
 import argparse
+import base64
 import errno
 import hashlib
 import http.server
@@ -63,6 +64,7 @@ import shutil
 import signal
 import socket
 import socketserver
+import struct
 import subprocess
 import sys
 import tarfile
@@ -738,6 +740,275 @@ class Registry:
             return list(self.pending_mods)
 
 
+# --------------------------------------------------------------------------- the tunnel
+#
+# A network that lets nothing out but HTTPS makes a Minecraft server unreachable, because the game
+# dials a raw TCP port. The fix is to carry that TCP connection inside a WebSocket to a relay that
+# dials the server on the visitor's behalf - which is what Cloudflare Workers can do, and what this
+# project's gateway already implements.
+#
+# The protocol is the one documented in gateway/cloudflare-worker.js ("goldproxy.v1"), so the Worker
+# that repository deploys works with this unchanged:
+#
+#   POST /v1/token {host,port}          -> {"token":…}
+#   WS   /v1/connect  {"t":"open",…}    <- {"t":"ready",…}
+#   then binary frames are raw TCP, and text frames are
+#        {"t":"ack","n"} (flow control), {"t":"ping"/"pong","id"}, {"t":"error",…}, {"t":"end",…}
+
+
+class WebSocketError(RuntimeError):
+    pass
+
+
+def ws_connect(url, timeout=20):
+    """The smallest WebSocket client that can carry a byte stream: handshake, frames, ping/pong.
+
+    Python's standard library has no WebSocket client, and this file aims to depend on nothing but
+    the standard library, so it does the handshake and the framing itself.
+    """
+    import ssl
+    parts = urllib.parse.urlsplit(url)
+    secure = parts.scheme in ("wss", "https")
+    host = parts.hostname
+    port = parts.port or (443 if secure else 80)
+    path = parts.path or "/"
+    if parts.query:
+        path += "?" + parts.query
+    sock = socket.create_connection((host, port), timeout=timeout)
+    if secure:
+        sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
+    key = base64.b64encode(os.urandom(16)).decode()
+    request = ("GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+               "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n"
+               # the gateway speaks this dialect and refuses anything else, which is a good thing:
+               # a relay that accepted any upgrade would be a browser-accessible port scanner
+               "Sec-WebSocket-Protocol: goldproxy.v1\r\n\r\n"
+               % (path, parts.netloc, key))
+    sock.sendall(request.encode())
+    # read the response headers, one byte at a time so nothing of the first frame is consumed
+    head = b""
+    while b"\r\n\r\n" not in head:
+        chunk = sock.recv(1)
+        if not chunk:
+            raise WebSocketError("the relay closed the connection during the handshake")
+        head += chunk
+        if len(head) > 8192:
+            raise WebSocketError("the relay sent no usable handshake")
+    status, _, rest = head.decode("utf-8", "replace").partition("\r\n")
+    if "101" not in status:
+        raise WebSocketError("the relay refused the WebSocket: %s" % status.strip())
+    expect = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+                                           .encode()).digest()).decode()
+    if expect.lower() not in rest.lower():
+        raise WebSocketError("the relay's handshake did not match")
+    return sock
+
+
+def ws_send(sock, data, opcode=2):
+    """One masked frame. Clients must mask; servers must not."""
+    header = bytearray([0x80 | opcode])
+    length = len(data)
+    if length < 126:
+        header.append(0x80 | length)
+    elif length < (1 << 16):
+        header.append(0x80 | 126)
+        header += struct.pack("!H", length)
+    else:
+        header.append(0x80 | 127)
+        header += struct.pack("!Q", length)
+    mask = os.urandom(4)
+    header += mask
+    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+    with _ws_lock_for(sock):
+        sock.sendall(bytes(header) + masked)
+
+
+def ws_recv(sock, timeout=None):
+    """One frame: (opcode, payload). Raises on a closed connection."""
+    def exact(n):
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                raise WebSocketError("closed")
+            buf += chunk
+        return buf
+    if timeout is not None:
+        sock.settimeout(timeout)
+    first = exact(2)
+    opcode = first[0] & 0x0F
+    masked = bool(first[1] & 0x80)
+    length = first[1] & 0x7F
+    if length == 126:
+        length = struct.unpack("!H", exact(2))[0]
+    elif length == 127:
+        length = struct.unpack("!Q", exact(8))[0]
+    mask = exact(4) if masked else None
+    payload = exact(length) if length else b""
+    if mask:
+        payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+    return opcode, payload
+
+
+_WS_LOCKS = {}
+
+
+def _ws_lock_for(sock):
+    """One lock per socket, so two threads (game->relay, relay->game) never interleave frames."""
+    with threading.Lock():
+        lock = _WS_LOCKS.get(id(sock))
+        if lock is None:
+            lock = threading.Lock()
+            _WS_LOCKS[id(sock)] = lock
+        return lock
+
+
+class Tunnel:
+    """One Minecraft server, reachable at 127.0.0.1:<local port> through a relay.
+
+    The game connects to the local address as if it were the server; every connection is carried to
+    the relay inside a WebSocket, and the relay dials the real server.
+    """
+
+    def __init__(self, relay, host, port, local_port=0, log=print):
+        self.relay = relay.rstrip("/")
+        self.host = host
+        self.port = int(port)
+        self.local_port = int(local_port or 0)
+        self.log = log
+        self.server = None
+        self.thread = None
+        self.running = False
+        self.connections = 0
+
+    def _token(self):
+        import urllib.request
+        body = json.dumps({"host": self.host, "port": self.port}).encode()
+        req = urllib.request.Request(self.relay.replace("ws://", "http://").replace("wss://", "https://")
+                                     + "/v1/token", data=body,
+                                     headers={"Content-Type": "application/json",
+                                              "User-Agent": "%s/%s" % (NAME, VERSION)})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            data = json.loads(response.read().decode("utf-8", "replace"))
+        token = data.get("token")
+        if not token:
+            raise WebSocketError("the relay did not issue a token: %s" % data)
+        return token
+
+    def _pump(self, client):
+        """One game connection: open a relay socket, then copy bytes both ways."""
+        try:
+            token = self._token()
+            ws_url = (self.relay.replace("https://", "wss://").replace("http://", "ws://")
+                      .rstrip("/") + "/v1/connect")
+            sock = ws_connect(ws_url)
+            ws_send(sock, json.dumps({"t": "open", "v": 1, "token": token,
+                                      "host": self.host, "port": self.port}).encode(), opcode=1)
+            # wait for ready, ignoring anything else the relay says first
+            for _ in range(20):
+                opcode, payload = ws_recv(sock)
+                if opcode == 9:
+                    ws_send(sock, payload, opcode=10)
+                    continue
+                if opcode in (8,):
+                    raise WebSocketError("the relay closed the connection")
+                if opcode != 1:
+                    continue
+                message = json.loads(payload.decode("utf-8", "replace"))
+                if message.get("t") == "ready":
+                    break
+                if message.get("t") == "error":
+                    raise WebSocketError(message.get("message") or message.get("code") or "refused")
+            else:
+                raise WebSocketError("the relay never said it was ready")
+            self.connections += 1
+            self.log("tunnel: %s:%d is open through the relay" % (self.host, self.port))
+            stop = threading.Event()
+
+            def to_relay():
+                try:
+                    while not stop.is_set():
+                        data = client.recv(32768)
+                        if not data:
+                            break
+                        ws_send(sock, data)
+                except Exception:
+                    pass
+                finally:
+                    stop.set()
+                    try:
+                        ws_send(sock, b"", opcode=8)
+                    except Exception:
+                        pass
+
+            up = threading.Thread(target=to_relay, daemon=True)
+            up.start()
+            received = 0
+            while not stop.is_set():
+                opcode, payload = ws_recv(sock, timeout=120)
+                if opcode == 2 or opcode == 0:
+                    client.sendall(payload)
+                    # The relay's flow control is a *cumulative* count: it pauses the target while
+                    # the client has more unacknowledged bytes than the window, and it sets its own
+                    # counter from this number rather than adding to it. Sending the size of one
+                    # frame here stalls a real session after a few hundred kilobytes.
+                    received += len(payload)
+                    try:
+                        ws_send(sock, json.dumps({"t": "ack", "n": received}).encode(), opcode=1)
+                    except Exception:
+                        pass
+                elif opcode == 1:
+                    message = json.loads(payload.decode("utf-8", "replace"))
+                    if message.get("t") == "ping":
+                        ws_send(sock, json.dumps({"t": "pong", "id": message.get("id")}).encode(), 1)
+                    elif message.get("t") in ("end", "error"):
+                        break
+                elif opcode == 9:
+                    ws_send(sock, payload, opcode=10)
+                elif opcode == 8:
+                    break
+        except Exception as exc:  # noqa: BLE001
+            self.log("tunnel: %s:%d could not be reached through the relay: %s"
+                     % (self.host, self.port, exc))
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+    def start(self):
+        if not self.relay:
+            raise WebSocketError("a relay URL is needed to tunnel a server (Settings → relay)")
+        self.server = socket.socket()
+        self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server.bind(("127.0.0.1", self.local_port))
+        self.server.listen(4)
+        self.local_port = self.server.getsockname()[1]
+        self.running = True
+
+        def accept():
+            while self.running:
+                try:
+                    client, _addr = self.server.accept()
+                except OSError:
+                    break
+                threading.Thread(target=self._pump, args=(client,), daemon=True).start()
+
+        self.thread = threading.Thread(target=accept, daemon=True)
+        self.thread.start()
+        self.log("tunnel: %s:%d will be reachable at 127.0.0.1:%d through %s"
+                 % (self.host, self.port, self.local_port, self.relay))
+        return self.local_port
+
+    def stop(self):
+        self.running = False
+        try:
+            if self.server:
+                self.server.close()
+        except Exception:
+            pass
+
+
 # --------------------------------------------------------------------------- session
 
 class Session:
@@ -776,6 +1047,8 @@ class Session:
         self.cancel_requested = False
         self.last_touch = time.time()
         self.pending_mods = []      # jars the page pushed in, waiting for a launch
+        self.tunnel = None          # a server carried to us through a relay, when asked for
+        self.quick_play = None      # 127.0.0.1:<port>, handed to the client to join
         self.java = None
         self.java_major = 0
         self.jre_fetched = False
@@ -938,6 +1211,7 @@ class Session:
                 "why": why, "state": self.state}
 
     def stop(self):
+        self._stop_tunnel()
         with self.lock:
             proc = self.proc
         if proc and proc.poll() is None:
@@ -1037,6 +1311,25 @@ class Session:
             local = list(self.cfg.mod_jar or []) + list(opts.get("localMods") or [])
             local += self._pending_mod_paths()
             mods += self._local_mods(local)
+
+            # ---- a server through the relay, if one was asked for
+            server = (opts.get("tunnelServer") or "").strip()
+            if server:
+                host, _sep, port = server.rpartition(":")
+                if not host or not port.isdigit():
+                    self.log("that server address is not host:port - ignoring %r" % server)
+                else:
+                    try:
+                        self.tunnel = Tunnel(self.cfg.relay, host, int(port),
+                                             local_port=int(opts.get("tunnelPort") or 0),
+                                             log=self.log)
+                        local = self.tunnel.start()
+                        self.quick_play = "127.0.0.1:%d" % local
+                        self.log("the game will join %s, which the relay carries to %s:%s"
+                                 % (self.quick_play, host, port))
+                    except Exception as exc:  # noqa: BLE001
+                        self.log("could not tunnel %s: %s" % (server, exc))
+                        self.tunnel = None
 
             # ---- command
             self._phase("launch", "starting the game")
@@ -1736,6 +2029,10 @@ class Session:
         cmd += materialise(jvm_args, sub, features)
         cmd += [main_class]
         cmd += materialise(game_args, sub, features)
+        if self.quick_play:
+            # 1.20 and later can join straight away: the difference between "connect to
+            # 127.0.0.1:35565 yourself" and pressing PLAY and already being in the server
+            cmd += ["--quickPlayMultiplayer", self.quick_play]
         return cmd, classpath
 
     def _preseed_options(self):
@@ -1819,6 +2116,14 @@ class Session:
 
 
 
+    def _stop_tunnel(self):
+        if self.tunnel:
+            try:
+                self.tunnel.stop()
+            except Exception:
+                pass
+            self.tunnel = None
+
     def cleanup(self, why="the page asked for it"):
         """Delete the sandbox. This is the promise the whole design rests on."""
         if not os.path.isdir(self.root):
@@ -1842,6 +2147,7 @@ class Session:
                     files += 1
                 except OSError:
                     pass
+        self._stop_tunnel()
         shutil.rmtree(self.root, ignore_errors=True)
         with self.lock:
             self.cleanup_deadline = None
@@ -2270,6 +2576,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "loader": body.get("loader") or "auto",
                 "loaderKind": body.get("loaderKind") or "fabric",
                 "relay": body.get("relay") or self.server.registry.cfg.relay,
+                "tunnelServer": body.get("tunnelServer"),
+                "tunnelPort": body.get("tunnelPort"),
                 "mods": body.get("mods") or [],
                 "username": body.get("username") or "Player",
                 "memory": body.get("memory") or DEFAULT_MEMORY,
@@ -2869,6 +3177,11 @@ def parse_args(argv):
     ap.add_argument("--loader", default="auto",
                     help="loader version, or 'auto'/'stable'/'latest' for the newest suitable "
                          "build of the chosen kind")
+    ap.add_argument("--server", default=None, metavar="HOST:PORT",
+                    help="a Minecraft server to reach through the relay, for networks that "
+                         "block game ports: the client joins it automatically")
+    ap.add_argument("--tunnel-port", type=int, default=0, metavar="PORT",
+                    help="the local port that receives that server (default: any free one)")
     ap.add_argument("--mods", default="",
                     help="comma-separated Modrinth slugs, e.g. fabric-api,modmenu")
     ap.add_argument("--mod-jar", action="append", default=[], metavar="PATH",
@@ -3075,6 +3388,8 @@ def main(argv=None):
 
     if args.launch:
         opts = {
+            "tunnelServer": args.server,
+            "tunnelPort": args.tunnel_port,
             "version": args.version,
             "loader": args.loader,
             "loaderKind": args.loader_kind,

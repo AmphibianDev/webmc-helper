@@ -291,6 +291,18 @@
         </div>
 
         <div class="card">
+          <h3>Join a server <span class="tag">optional</span></h3>
+          <div class="row">
+            <input id="server" placeholder="play.example.net:25565" />
+          </div>
+          <div class="hint" style="margin-top:10px">
+            For networks that block game ports. The helper carries the connection to the relay, which
+            dials the server, and the client joins it as soon as it starts — so you press PLAY and you
+            are in. Needs a relay URL in <b>Settings</b>.
+          </div>
+        </div>
+
+        <div class="card">
           <h3>Progress<span class="spacer"></span><span class="hint" id="pct"></span></h3>
           <div class="bar" id="bar"><i></i></div>
           <div class="hint" style="margin-top:10px"><strong id="phase">Ready</strong>
@@ -548,9 +560,13 @@
                 Where an administrator blocked it with <code>LocalNetworkAccessBlockedForUrls</code>,
                 only the helper's own page will do — which is why PLAY hands the tab over.</td></tr>
             <tr><td>Minecraft servers are unreachable (only 443 gets out)</td>
-              <td>Checked in the console: the server address field tunnels a Minecraft server through
-                the relay's WebSocket bridge, so the game connects to a local address and the bytes
-                travel inside an ordinary HTTPS connection.</td></tr>
+              <td>Put the server in <b>Join a server</b> on the Play view with a relay URL set. The
+                helper listens on a local port, and every connection the game makes to it is carried
+                inside a WebSocket to the relay, which dials the server. The game joins automatically
+                (<code>--quickPlayMultiplayer</code>), so there is no address to type in game. This is
+                the same <code>goldproxy.v1</code> protocol the repository's gateway already speaks,
+                and the relay refuses a session that does not begin with a Minecraft handshake — a
+                relay that dialled any port for any bytes would be a port scanner.</td></tr>
           </table>
 
           <h3 id="d6">More than one window</h3>
@@ -585,6 +601,9 @@
             <tr><td>The game starts without textures or sound</td>
               <td>Assets were skipped (<code>--no-assets</code>) or failed to download; the log says
                 which.</td></tr>
+            <tr><td>The tunnel says it could not reach the server</td>
+              <td>The relay refused it (a bad token, a blocked address, or the server being down) and
+                says which. The rest of the session still runs; only the join fails.</td></tr>
             <tr><td>A crash</td>
               <td>Read the log panel, or take the session zip: it contains the client's own log and
                 any crash report. <b>Copy diagnostics</b> in Settings puts everything worth pasting
@@ -1274,6 +1293,7 @@ async function launch(){
       memory: $("memory").value.trim() || "2G",
       assets: $("assets").value === "1",
       relay: $("relay").value.trim() || null,
+      tunnelServer: $("server").value.trim() || null,
       // the helper keeps its own copy of the last session, so "restore" also decides whether to
       // start from that when this browser has nothing (a different origin does exactly that)
       restore: $("restore").checked
