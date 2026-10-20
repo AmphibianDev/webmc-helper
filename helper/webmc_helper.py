@@ -117,6 +117,10 @@ RELAY_PREFIXES = (
 # Order matters: the first that answers /health wins, so list a spare. An empty tuple means the
 # helper simply downloads directly, which is what most networks want anyway.
 DEFAULT_RELAYS = (
+    # The relay this project deployed for everyone. On a network that blocks workers.dev it simply
+    # does not answer, and the helper downloads directly instead. Add a second URL here (a Render
+    # deployment, or your own domain) and the helper tries them in order.
+    "https://webmc-relay.webmc-helper.workers.dev",
 )
 
 _RELAY_CHOICE = {"probed": False, "url": None}

@@ -1,0 +1,15 @@
+# One-click deploy on Render, whose onrender.com hostname is allowed by a lot of networks that block
+# workers.dev outright. Push this repository, then in Render: New → Blueprint → pick the repo.
+services:
+  - type: web
+    name: webmc-relay
+    runtime: node
+    plan: free
+    buildCommand: "echo 'no dependencies to install'"
+    startCommand: node relay/node/server.js
+    healthCheckPath: /health
+    envVars:
+      - key: RELAY_SECRET
+        generateValue: true
+      - key: RELAY_ALLOWED_PORTS
+        value: 25565,25566,25567,25568,25575,25585,19132

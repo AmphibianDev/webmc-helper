@@ -324,6 +324,35 @@ refused. The knobs, if you want them (wrangler variables):
 | `RELAY_ALLOW_ANY_PORT` | `0` | `1` stops enforcing the port allowlist. |
 | `RELAY_MAX_SECONDS` | `1800` | Longest a single session may live. |
 
+### Where it runs matters as much as what it does
+
+A relay is only useful if your network can reach it, and networks that block things block by hostname.
+Measured on one school network, for example: `workers.dev`, `herokuapp.com`, `deno.dev`, `fly.dev`,
+`replit.dev`, `glitch.me` and `netlify.app` were all pointed at 0.0.0.0, while `onrender.com`,
+`vercel.app`, `github.io` and `amazonaws.com` answered normally — including the Eaglercraft community
+relay on Heroku, which was blocked along with everything else on that list.
+
+So there are two forms of the same relay:
+
+| | Cloudflare Worker (`relay/relay.js`) | Node (`relay/node/server.js`) |
+|---|---|---|
+| Where it lives | Cloudflare's edge, one deploy, no server | any host that runs Node: Render, Heroku, Fly, Railway, Replit, a VPS, a laptop |
+| Hostname you get | `*.workers.dev`, or a domain you own | whatever that host gives you, e.g. `*.onrender.com` |
+| Dependencies | none | none — http, net and crypto are the whole stack |
+| Raw TCP for the game tunnel | `cloudflare:sockets` | `net.connect` |
+
+The Node one exists for exactly the case where `workers.dev` is blocked but some other host is not. On
+Render it is a two-minute job with the blueprint in `relay/node/render.yaml`:
+
+```bash
+# push this repository, then: Render → New → Blueprint → pick the repo → Deploy
+# it starts with: node relay/node/server.js   (PORT and RELAY_SECRET are set from the blueprint)
+python3 relay/test-relay.py https://webmc-relay.onrender.com
+```
+
+Give it a hostname your network allows and it behaves identically: same routes, same token, same
+`goldproxy.v1` tunnel protocol, so the helper cannot tell them apart and nothing else needs changing.
+
 The helper uses it when it is given `--relay URL` (downloads), `--server HOST:PORT` (a server to join
 through the tunnel) or `--proxy-game` (the game's own connections). The launcher's Settings panel
 sets all three from the one URL, which is the whole point of it being one setting.

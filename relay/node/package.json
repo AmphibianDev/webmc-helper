@@ -1,0 +1,9 @@
+{
+  "name": "webmc-relay-node",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The WebMC relay for any host that runs Node: fetches Minecraft for networks that block Mojang, and carries a game connection inside a WebSocket for networks that block game ports. No dependencies.",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}
