@@ -447,6 +447,13 @@
             </select></div>
           </div>
           <div class="rowline">
+            <div class="rl"><b>Keep the downloads for next time</b>
+              <span>Mojang's files, kept in this machine's cache — about 430 MB. Worth it on a slow
+                or filtered network: without it every launch fetches them again. <b>Leave nothing</b>
+                removes the cache with everything else.</span></div>
+            <div class="rc"><input type="checkbox" id="cacheKeep" /></div>
+          </div>
+          <div class="rowline">
             <div class="rl"><b>Put this browser's last session back</b>
               <span>Worlds, options and screenshots live in this browser. Nothing is uploaded.</span></div>
             <div class="rc"><input type="checkbox" id="restore" checked /></div>
@@ -1300,6 +1307,7 @@ async function launch(){
       username: $("username").value.trim() || "Player",
       memory: $("memory").value.trim() || "2G",
       assets: $("assets").value === "1",
+      cache: $("cacheKeep").checked,
       relay: relayChoice(),
       tunnelServer: $("server").value.trim() || null,
       tunnelEverything: $("relayMode").value !== "off",
@@ -1540,6 +1548,7 @@ $("relayTest").onclick = async () => {
   }
 };
 $("relayMode").addEventListener("change", relayModeChanged);
+$("cacheKeep").onchange = () => { try { localStorage.setItem(LS + "cacheKeep", $("cacheKeep").checked ? "1" : "0"); } catch(e){} };
 $("relay").addEventListener("change", () => { keep("relay"); showRelayInUse(); });
 $("server").addEventListener("change", () => keep("server"));
 function keep(key){
@@ -1628,6 +1637,7 @@ $("openlocal2").onclick = (e) => { e.preventDefault(); window.open("http://127.0
     applyMotion(motion);
     $("proxyAll").checked = localStorage.getItem(LS + "proxyAll") === "1";
     $("restricted").checked = localStorage.getItem(LS + "restricted") === "1";
+    $("cacheKeep").checked = localStorage.getItem(LS + "cacheKeep") === "1";
   } catch(e){}
   // a soft arrival rather than a hard cut
   // a small entrance for whatever the first card is called in this shell
