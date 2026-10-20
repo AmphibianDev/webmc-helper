@@ -7,356 +7,364 @@
 <!--
   A launcher whose interface is a web page, and which keeps nothing of the game on the machine.
 
-  Shell: a top bar you navigate, an immersive hero for the installation, and one full-width activity
-  drawer that slides up from the bottom. There is no rail and no permanent side column — the log has
-  the whole width of the window when you want it, and a strip you can watch when you do not.
+  The look, third attempt: one floating frame instead of a full-bleed shell, a gate for a mark, an
+  aurora accent instead of Minecraft green, settings as rows rather than a grid of cards, and the log
+  as a bar inside the frame that opens in place.
 
   The page cannot start a program, read a file, or see /tmp. A helper on this machine does that; this
   is the interface to it.
 -->
 <style>
   :root{
-    --bg:#0c0d10; --ink:#eef0f4; --muted:#a4a7b0; --dim:#6d707a;
-    --line:#ffffff14; --line2:#ffffff26;
-    --green:#48a92f; --green2:#63c93f; --green3:#96ef6c;
-    --blue:#63a4ef; --red:#d4685a; --amber:#e0b23c;
-    --glass:#ffffff0a; --glass2:#ffffff12;
-    --r:18px; --r2:11px; --r3:8px;
-    --shadow:0 24px 60px #00000073, 0 1px 0 #ffffff12 inset;
+    --bg:#07080b; --frame:#0d0f15; --card:#11141b; --card2:#0f1218;
+    --ink:#eef1f7; --muted:#9aa3b4; --dim:#6b7386;
+    --line:#ffffff12; --line2:#ffffff24;
+    --mint:#5ef2a8; --cyan:#39c8ff; --violet:#9a8cff; --amber:#ffc46b; --red:#ff8a7a;
+    --r:26px; --r2:18px; --r3:12px; --pill:999px;
+    --shadow:0 30px 80px #000000a6;
+    --aurora:linear-gradient(135deg,var(--mint),var(--cyan));
   }
   *{box-sizing:border-box}
-  html,body{height:100%;margin:0}
-  body{background:var(--bg);color:var(--ink);overflow:hidden;
-       font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-       letter-spacing:.004em;-webkit-font-smoothing:antialiased}
-  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
-  code{font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:#08090b;
-       border:1px solid var(--line);padding:1px 6px;border-radius:5px;color:#d7d9e0}
-  svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;
-      stroke-linejoin:round}
-  ::-webkit-scrollbar{width:12px;height:12px}
-  ::-webkit-scrollbar-thumb{background:#37394133;border-radius:8px;border:4px solid transparent;
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);overflow:hidden;
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       letter-spacing:.002em;-webkit-font-smoothing:antialiased}
+  a{color:var(--cyan);text-decoration:none} a:hover{text-decoration:underline}
+  code{font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#cfe8ff;background:#ffffff0d;
+       border:1px solid var(--line);border-radius:6px;padding:1px 6px}
+  ::-webkit-scrollbar{width:11px;height:11px}
+  ::-webkit-scrollbar-thumb{background:#ffffff1f;border:4px solid transparent;border-radius:99px;
                             background-clip:content-box}
-  ::-webkit-scrollbar-thumb:hover{background:#4a4c5633;background-clip:content-box}
+  svg{display:block}
 
-  /* ------------------------------------------------------------------ atmosphere */
-  .atmos{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
-  .atmos:before{content:"";position:absolute;inset:-30%;
-    background:conic-gradient(from 120deg at 55% 35%, #48a92f1c, #63a4ef17, #8e5ce819, #48a92f1c);
-    filter:blur(80px);animation:spin 54s linear infinite}
-  .atmos:after{content:"";position:absolute;inset:0;
-    background:radial-gradient(120rem 70rem at 50% -15%, #ffffff0e, transparent 60%),
-               radial-gradient(80rem 60rem at 50% 120%, #000000a6, transparent 60%)}
-  @keyframes spin{to{transform:rotate(360deg)}}
-  .orb{position:absolute;width:46rem;height:46rem;left:var(--mx,50%);top:var(--my,42%);
-       margin:-23rem 0 0 -23rem;border-radius:50%;filter:blur(4px);opacity:.42;
-       background:radial-gradient(circle,#63c93f3a 0%,#63a4ef26 44%,transparent 70%);
-       transition:opacity .7s}
-  .overlay{position:fixed;inset:0;z-index:1;pointer-events:none}
-  body.fx-glow .overlay{box-shadow:inset 0 0 260px #000000ab}
-  body.fx-grid .overlay{background-image:linear-gradient(#ffffff0a 1px,transparent 1px),
-                        linear-gradient(90deg,#ffffff0a 1px,transparent 1px);
-                        background-size:44px 44px;
-                        mask-image:radial-gradient(90% 70% at 50% 20%,#000 12%,transparent 78%)}
-  body.fx-scan .overlay{background:repeating-linear-gradient(#ffffff08 0 1px,transparent 1px 4px)}
-  body.fx-scan .overlay:after{content:"";position:absolute;inset:0;
-    background:linear-gradient(#0000,#ffffff12 46%,#0000);animation:sweep 9s linear infinite}
-  @keyframes sweep{0%{transform:translateY(-62%)}100%{transform:translateY(62%)}}
+  /* ---------------------------------------------------------------- atmosphere */
+  .glow{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+  .glow i{position:absolute;display:block;border-radius:50%;filter:blur(90px);opacity:.5}
+  .glow i:nth-child(1){width:52rem;height:52rem;left:-12rem;top:-18rem;
+    background:radial-gradient(circle,#5ef2a836,transparent 62%);animation:drift1 44s ease-in-out infinite}
+  .glow i:nth-child(2){width:44rem;height:44rem;right:-14rem;top:18rem;
+    background:radial-gradient(circle,#9a8cff2b,transparent 62%);animation:drift2 56s ease-in-out infinite}
+  @keyframes drift1{50%{transform:translate3d(6rem,4rem,0)}}
+  @keyframes drift2{50%{transform:translate3d(-5rem,-3rem,0)}}
+  /* the pointer moves the whole layer a little: cheap, and it reads as depth rather than as a toy */
+  #bg{transition:transform .5s cubic-bezier(.22,.61,.36,1)}
+  body.motion-follow #bg{transform:translate3d(calc((var(--mx,50%) - 50%) * .05),
+                                              calc((var(--my,42%) - 50%) * .05), 0)}
+  #fx{position:fixed;inset:0;z-index:1;pointer-events:none}
+  body.fx-glow #fx{box-shadow:inset 0 0 240px #0000009e}
+  body.fx-grid #fx{background-image:linear-gradient(#ffffff0a 1px,transparent 1px),
+                   linear-gradient(90deg,#ffffff0a 1px,transparent 1px);background-size:52px 52px;
+                   mask-image:radial-gradient(80% 60% at 50% 0%,#000 8%,transparent 72%)}
+  body.fx-scan #fx{background:repeating-linear-gradient(#ffffff07 0 1px,transparent 1px 5px)}
+  body.fx-scan #fx:after{content:"";position:absolute;inset:0;background:linear-gradient(#0000,#ffffff0d,#0000);
+                         animation:sweep 11s linear infinite}
+  @keyframes sweep{0%{transform:translateY(-60%)}100%{transform:translateY(60%)}}
 
-  /* ------------------------------------------------------------------ shell */
-  .shell{position:relative;z-index:2;height:100vh;display:flex;flex-direction:column}
-  .topbar{display:flex;align-items:center;gap:16px;padding:14px 22px;flex:none}
-  .mark{display:flex;align-items:center;gap:12px}
-  .cube{width:32px;height:32px;border-radius:10px;flex:none;position:relative;
-        background:linear-gradient(150deg,#9df173,#3f8a29 58%,#1f4a17);
-        box-shadow:0 8px 22px #0007, 0 0 26px #63c93f3d, inset 0 1px 0 #ffffff40}
-  .cube:after{content:"";position:absolute;inset:8px 8px auto 8px;height:9px;border-radius:3px;
-              background:#00000042}
-  .mark b{font-size:17.5px;letter-spacing:-.015em}
-  .mark span{display:block;font-size:9.5px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)}
+  /* ---------------------------------------------------------------- the frame */
+  .frame{position:relative;z-index:2;height:100vh;max-width:1280px;margin:0 auto;display:flex;
+         flex-direction:column;background:var(--frame);border:1px solid var(--line);
+         border-radius:var(--r);box-shadow:var(--shadow);overflow:hidden}
+  .frame:before{content:"";position:absolute;inset:0;border-radius:var(--r);padding:1px;pointer-events:none;
+    background:linear-gradient(150deg,#5ef2a83d,#ffffff00 40%,#9a8cff33);
+    -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+    -webkit-mask-composite:xor;mask-composite:exclude}
 
-  .tabs{display:flex;gap:4px;padding:5px;border:1px solid var(--line);border-radius:99px;
-        background:var(--glass);backdrop-filter:blur(18px) saturate(140%)}
-  .tabs button{border:0;background:none;color:var(--muted);padding:9px 18px;border-radius:99px;
-               font-size:14px;display:inline-flex;align-items:center;gap:9px;
-               transition:color .15s, background .15s}
-  .tabs button:hover{color:var(--ink);background:#ffffff0d}
-  .tabs button.on{color:#0e1a09;background:linear-gradient(180deg,#a9f184,#63c93f);font-weight:600;
-                  box-shadow:0 6px 18px #3f8a2952}
-  .tabs button svg{width:16px;height:16px}
-  .grow{flex:1}
-  .status{display:inline-flex;align-items:center;gap:9px;font-size:12px;padding:7px 14px;
-          border:1px solid var(--line);border-radius:99px;background:var(--glass);
-          color:var(--muted);backdrop-filter:blur(16px);white-space:nowrap}
+  .top{display:flex;align-items:center;gap:18px;padding:20px 26px 14px;flex:none}
+  .brand{display:flex;align-items:center;gap:11px}
+  .brand svg{width:38px;height:38px;flex:none;filter:drop-shadow(0 6px 18px #5ef2a83d)}
+  .brand b{display:block;font-size:17px;letter-spacing:-.02em;font-weight:640;line-height:1.15}
+  .brand span{display:block;font-size:9.5px;letter-spacing:.28em;text-transform:uppercase;color:var(--dim)}
+  nav{display:flex;gap:2px;margin-left:10px;flex:1}
+  nav button{background:none;border:0;color:var(--muted);font:inherit;font-size:14px;padding:9px 14px 11px;
+             position:relative;cursor:pointer;border-radius:10px 10px 0 0}
+  nav button:hover{color:var(--ink)}
+  nav button.on{color:var(--ink)}
+  nav button.on:after{content:"";position:absolute;left:12px;right:12px;bottom:-1px;height:2px;
+                      border-radius:2px;background:var(--aurora)}
+  .pill{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);
+        border:1px solid var(--line);border-radius:var(--pill);padding:7px 13px;background:#ffffff08;
+        white-space:nowrap;backdrop-filter:blur(12px)}
   .dot{width:7px;height:7px;border-radius:50%;background:var(--dim);flex:none}
-  .dot.ok{background:var(--green2);box-shadow:0 0 10px var(--green2)}
+  .dot.ok{background:var(--mint);box-shadow:0 0 12px var(--mint)}
   .dot.bad{background:var(--red)}
   .dot.busy{background:var(--amber);animation:blink 1.1s ease-in-out infinite}
-  @keyframes blink{50%{opacity:.3}}
+  @keyframes blink{50%{opacity:.25}}
+  .hairline{height:1px;background:linear-gradient(90deg,transparent,var(--line2),transparent);flex:none}
 
-  /* ------------------------------------------------------------------ workspace */
-  .workspace{flex:1;min-height:0;overflow:auto;padding:6px 22px 22px}
-  .pane{display:none;max-width:1500px;margin:0 auto}
-  .pane.on{display:block;animation:rise .3s cubic-bezier(.3,0,.2,1)}
-  @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+  .body{flex:1;min-height:0;overflow:auto;padding:22px 26px 26px}
+  .view{display:none}
+  .view.on{display:block;animation:in .32s cubic-bezier(.22,.61,.36,1)}
+  @keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 
-  .hero{border:1px solid var(--line);border-radius:var(--r);padding:34px 38px;
-        background:linear-gradient(120deg,#1d2027cc,#15171bd9 60%),var(--glass);
-        backdrop-filter:blur(24px) saturate(150%);box-shadow:var(--shadow);position:relative;
-        overflow:hidden}
-  .hero:before{content:"";position:absolute;inset:-40% -10% auto -10%;height:220px;
-    background:radial-gradient(55% 100% at 30% 100%,#63c93f22,transparent 72%)}
-  .hero:after{content:"";position:absolute;right:-120px;top:-160px;width:420px;height:420px;
-    border-radius:50%;background:radial-gradient(circle,#63a4ef22,transparent 66%)}
-  .hero .pad{position:relative;z-index:2}
-  .kicker{font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)}
-  .hero h1{margin:12px 0 6px;font-size:clamp(46px,7vw,80px);line-height:.94;letter-spacing:-.045em;
-           font-weight:750;
-           background:linear-gradient(96deg,#ffffff 6%,#dff5cd 46%,#8fe665 96%);
-           -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
-  .hero .lede{color:var(--muted);font-size:14.5px;max-width:60ch;margin-top:14px}
-  .chips{display:flex;flex-wrap:wrap;gap:9px;margin-top:20px}
-  .chip{font-size:12px;padding:5px 13px;border-radius:99px;border:1px solid var(--line);
-        background:#ffffff0a;color:var(--muted)}
-  .chip.on{color:#e2fbd3;border-color:#3f6f2c;background:#1e2c16;box-shadow:0 0 18px #63c93f30}
+  .split{display:grid;grid-template-columns:1.5fr 1fr;gap:18px;align-items:stretch}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r2);padding:24px 26px;
+        position:relative;overflow:hidden}
+  .card:before{content:"";position:absolute;inset:0;border-radius:var(--r2);padding:1px;pointer-events:none;
+    background:linear-gradient(180deg,#ffffff14,transparent 60%);
+    -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+    -webkit-mask-composite:xor;mask-composite:exclude}
+  .card.hero{display:flex;flex-direction:column;justify-content:space-between;
+             background:linear-gradient(160deg,#141922,#0f1219 70%)}
+  .card.hero:after{content:"";position:absolute;right:-110px;top:-130px;width:340px;height:340px;
+    border-radius:50%;background:radial-gradient(circle,#5ef2a82e,transparent 65%)}
+  .eyebrow{font-size:10.5px;letter-spacing:.3em;text-transform:uppercase;color:var(--dim);
+           display:flex;align-items:center;gap:9px}
+  .eyebrow:before{content:"";width:16px;height:1px;background:var(--line2)}
+  h1.big{margin:14px 0 0;font-size:clamp(52px,8.4vw,96px);line-height:.9;letter-spacing:-.05em;
+         font-weight:720;
+         background:linear-gradient(105deg,#ffffff,#bff7dd 52%,#5ef2a8);
+         -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .lede{color:var(--muted);font-size:14px;max-width:56ch;margin:16px 0 0}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}
+  .chip{font-size:11.5px;padding:5px 12px;border:1px solid var(--line);border-radius:var(--pill);
+        color:var(--muted);background:#ffffff07}
+  .chip.live{color:#c8ffe4;border-color:#2f6d51;background:#0f2419}
+  .fields{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:24px}
 
-  .picker{display:grid;grid-template-columns:1.1fr 1.1fr auto;gap:14px;align-items:end;margin-top:26px}
-  .play{height:66px;padding:0 46px;font-size:21px;font-weight:750;letter-spacing:.1em;border:0;
-        border-radius:14px;color:#0c1a06;cursor:pointer;
-        background:linear-gradient(180deg,#a9f184,#5cbe37 68%,#4aa22c);
-        box-shadow:0 16px 40px #2b671a80, 0 0 60px #63c93f3d, inset 0 1px 0 #ffffff66;
-        display:inline-flex;align-items:center;gap:12px}
-  .play:hover:not(:disabled){filter:brightness(1.06)}
-  .play:disabled{background:#24262c;color:var(--dim);box-shadow:none;cursor:not-allowed}
-  .stop{height:66px;padding:0 32px;font-size:16px;font-weight:700;border-radius:14px;
-        background:#3c2624;border:1px solid #6f3c36;color:#ffb3ab;cursor:pointer}
-
-  .facts{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:16px}
-  .fact{border:1px solid var(--line);border-radius:var(--r2);padding:16px 18px;background:var(--glass);
-        backdrop-filter:blur(18px)}
-  .fact .k{font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim)}
-  .fact .v{font-size:19px;font-weight:650;margin-top:7px;letter-spacing:-.01em;
-           overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .fact .s{font-size:11.5px;color:var(--dim);margin-top:3px;overflow:hidden;text-overflow:ellipsis;
-           white-space:nowrap}
-
-  .panel{border:1px solid var(--line);border-radius:var(--r);background:var(--glass);
-         backdrop-filter:blur(20px);box-shadow:var(--shadow);padding:24px 26px;margin-top:16px}
-  .panel h2{margin:0 0 16px;font-size:12px;letter-spacing:.2em;text-transform:uppercase;
-            color:var(--dim);font-weight:700;display:flex;align-items:center;gap:10px}
-  .panel h2 .grow{flex:1}
-  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-  .cols3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
-  label{display:block;font-size:11.5px;color:var(--muted);margin:0 0 6px;letter-spacing:.03em}
-  input,select{width:100%;background:#0a0b0dcc;border:1px solid var(--line);border-radius:var(--r2);
-               padding:12px 13px;font:inherit;font-size:14px;color:var(--ink);
-               transition:border-color .15s, box-shadow .15s}
-  input:focus,select:focus{outline:none;border-color:#63c93f99;box-shadow:0 0 0 4px #63c93f1c}
-  button{font:inherit;cursor:pointer;border-radius:var(--r2);border:1px solid var(--line);
-         background:var(--glass2);color:var(--ink);padding:10px 16px;font-size:14px;
+  label{display:block;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
+        margin:0 0 7px}
+  select,input[type=text],input[type=password],input:not([type]){width:100%;background:#0a0c11;
+        border:1px solid var(--line);border-radius:var(--r3);padding:12px 13px;font:inherit;font-size:14px;
+        color:var(--ink);appearance:none;transition:border-color .15s,box-shadow .15s}
+  select{background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),
+                          linear-gradient(135deg,var(--dim) 50%,transparent 50%);
+         background-position:calc(100% - 19px) 50%,calc(100% - 14px) 50%;
+         background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:34px}
+  input:focus,select:focus{outline:none;border-color:#5ef2a880;box-shadow:0 0 0 4px #5ef2a817}
+  button{font:inherit;cursor:pointer;border-radius:var(--r3);border:1px solid var(--line);
+         background:#ffffff0d;color:var(--ink);padding:11px 17px;font-size:14px;
          display:inline-flex;align-items:center;gap:9px;justify-content:center;
-         transition:transform .12s, background .15s, border-color .15s}
-  button:hover:not(:disabled){background:#ffffff1c;border-color:var(--line2);transform:translateY(-1px)}
-  button:active:not(:disabled){transform:none}
-  button:disabled{opacity:.4;cursor:not-allowed}
+         transition:transform .12s,background .16s,border-color .16s}
+  button:hover:not(:disabled){background:#ffffff18;border-color:var(--line2);transform:translateY(-1px)}
+  button:disabled{opacity:.35;cursor:not-allowed}
   button.tiny{padding:6px 12px;font-size:12.5px}
-  button.danger{background:#3c2624;border-color:#6f3c36;color:#ffb3ab}
-  .row{display:flex;gap:12px;align-items:flex-end}
-  .row>*{flex:1} .row .fixed{flex:0 0 auto}
-  .hint{font-size:12.5px;color:var(--dim);line-height:1.7}
-  .warn{border:1px solid #6d5a1f;background:#241f11cc;color:#e8cf8a;padding:14px 16px;
-        border-radius:var(--r2);font-size:13px;line-height:1.68}
-  .bad{border:1px solid #6f3c36;background:#2b1c1acc;color:#ffb3ab;padding:14px 16px;
-       border-radius:var(--r2);font-size:13px;line-height:1.68}
-  .steps{margin:12px 0 0;padding-left:20px;font-size:13px;color:var(--muted);line-height:1.9}
-  .check{display:flex;gap:11px;align-items:flex-start;margin:0;color:var(--ink);font-size:13.5px}
-  .check input{width:auto;margin-top:4px;flex:none}
-  details summary{cursor:pointer;color:var(--muted);font-size:13px;padding:2px 0}
-  .drop{border:1.5px dashed var(--line2);border-radius:var(--r);padding:26px;text-align:center;
+  button.ghost{background:none}
+  button.danger{background:#2a1512;border-color:#5c2f28;color:#ffb4a8}
+  .go{position:relative;width:100%;margin-top:18px;height:74px;font-size:22px;font-weight:700;
+      letter-spacing:.14em;border:0;border-radius:var(--r3);color:#04140c;overflow:hidden;
+      background:var(--aurora);box-shadow:0 20px 50px #2f8f6a4d,inset 0 1px 0 #ffffff6b}
+  .go:after{content:"";position:absolute;top:0;bottom:0;width:38%;left:-40%;
+            background:linear-gradient(100deg,transparent,#ffffff5c,transparent);
+            animation:sheen 4.6s ease-in-out infinite}
+  @keyframes sheen{0%,72%{left:-40%}86%,100%{left:120%}}
+  .go:disabled{background:#191d26;color:var(--dim);box-shadow:none}
+  .go:disabled:after{display:none}
+  .halt{width:100%;margin-top:18px;height:74px;border-radius:var(--r3);font-size:16px;font-weight:650;
+        background:#2a1512;border:1px solid #5c2f28;color:#ffb4a8}
+
+  /* the facts, as a list rather than tiles */
+  .facts{list-style:none;margin:0;padding:0}
+  .facts li{display:flex;align-items:baseline;gap:14px;padding:13px 0;border-bottom:1px solid var(--line)}
+  .facts li:last-child{border-bottom:0}
+  .facts .k{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);flex:none;
+            width:9.5rem}
+  .facts .v{font-size:15px;font-weight:600;letter-spacing:-.01em;margin-left:auto;text-align:right;
+            min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .facts .s{display:block;font-size:11.5px;color:var(--dim);font-weight:400;margin-top:2px}
+
+  .status{margin-top:18px;background:var(--card);border:1px solid var(--line);border-radius:var(--r2);
+          padding:18px 22px}
+  .statusline{display:flex;align-items:center;gap:14px;font-size:13px;color:var(--muted)}
+  .rail{flex:1;height:5px;border-radius:99px;background:#ffffff12;overflow:hidden}
+  .rail i{display:block;height:100%;width:0;background:var(--aurora);transition:width .45s}
+  .rail.wait i{width:32%;animation:slide 1.35s ease-in-out infinite}
+  @keyframes slide{0%{margin-left:-32%}100%{margin-left:100%}}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .stack>*+*{margin-top:18px}
+  .note{font-size:12.5px;color:var(--muted);line-height:1.75}
+  .warnbox{border:1px solid #6a5220;background:#221b0e;color:#f0d494;padding:14px 16px;border-radius:var(--r3);
+           font-size:13px;line-height:1.7}
+  .badbox{border:1px solid #5c2f28;background:#241311;color:#ffb4a8;padding:14px 16px;border-radius:var(--r3);
+          font-size:13px;line-height:1.7}
+  .steps{margin:10px 0 0;padding-left:20px;font-size:13px;color:var(--muted);line-height:1.95}
+  .rowline{display:flex;align-items:center;gap:18px;padding:15px 0;border-bottom:1px solid var(--line)}
+  .rowline:last-child{border-bottom:0}
+  .rowline .rl{flex:1;min-width:0}
+  .rowline .rl b{display:block;font-size:14px;font-weight:560}
+  .rowline .rl span{display:block;font-size:12.5px;color:var(--dim);margin-top:3px}
+  .rowline .rc{flex:0 0 auto;display:flex;gap:10px;align-items:center}
+  .rowline .rc.wide{flex-basis:340px}
+  .check{display:flex;gap:12px;align-items:flex-start;font-size:14px;color:var(--ink)}
+  .check input{width:auto;flex:none;margin-top:5px}
+  .drop{border:1.5px dashed var(--line2);border-radius:var(--r3);padding:26px;text-align:center;
         color:var(--muted);font-size:13.5px;cursor:pointer;transition:.16s}
-  .drop:hover,.drop.over{border-color:#63c93f;color:var(--ink);background:#63c93f12}
+  .drop:hover,.drop.over{border-color:var(--mint);color:var(--ink);background:#5ef2a80f}
   .mods{list-style:none;margin:16px 0 0;padding:0;font-size:13.5px}
   .mods li{display:flex;align-items:center;gap:12px;padding:11px 13px;border:1px solid var(--line);
-           border-radius:var(--r2);margin-bottom:8px;background:#ffffff07}
+           border-radius:var(--r3);margin-bottom:8px;background:#ffffff06}
   .mods .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .tag{display:inline-block;font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;
-       color:var(--dim);border:1px solid var(--line);border-radius:99px;padding:2px 9px;flex:none}
-  .tag.mine{color:#b0e795;border-color:#3a6330}
-  .tag.hub{color:#a8cdf2;border-color:#2f4f70}
-  .results{list-style:none;margin:16px 0 0;padding:0;max-height:340px;overflow:auto;font-size:13.5px}
-  .results li{display:flex;gap:12px;align-items:center;padding:11px 4px;
-              border-bottom:1px solid var(--line)}
+  .tag{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);border:1px solid var(--line);
+       border-radius:var(--pill);padding:2px 9px;flex:none}
+  .tag.mine{color:#b9f6d6;border-color:#2f6d51}
+  .tag.hub{color:#cad6ff;border-color:#3b4478}
+  .results{list-style:none;margin:16px 0 0;padding:0;max-height:330px;overflow:auto;font-size:13.5px}
+  .results li{display:flex;gap:12px;align-items:center;padding:11px 2px;border-bottom:1px solid var(--line)}
   .results .nm{flex:1;min-width:0}
-  .results .nm b{font-weight:600}
-  .results .nm div{color:var(--dim);font-size:12px;white-space:nowrap;overflow:hidden;
-                   text-overflow:ellipsis}
+  .results .nm b{font-weight:560}
+  .results .nm div{color:var(--dim);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-  /* ------------------------------------------------------------------ the drawer */
-  .drawer{flex:none;border-top:1px solid var(--line);background:#0a0b0ecc;backdrop-filter:blur(24px);
-          display:flex;flex-direction:column;height:52px;transition:height .26s cubic-bezier(.4,0,.2,1)}
-  body.drawer-open .drawer{height:46vh}
-  .strip{display:flex;align-items:center;gap:14px;padding:0 22px;height:52px;flex:none;cursor:pointer}
-  .strip b{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim)}
-  .track{flex:1;height:6px;border-radius:99px;background:#ffffff12;overflow:hidden;position:relative}
-  .track i{display:block;height:100%;width:0;border-radius:99px;
-           background:linear-gradient(90deg,#48a92f,#96ef6c);transition:width .4s}
-  .track.indet i{width:30%;animation:slide 1.3s ease-in-out infinite}
-  @keyframes slide{0%{margin-left:-30%}100%{margin-left:100%}}
-  .strip .phase{font-size:12.5px;color:var(--muted);min-width:16ch}
-  .strip .pct{font-size:12px;color:var(--dim);min-width:9ch;text-align:right}
-  .strip .toggle{font-size:11.5px;color:var(--muted);border:1px solid var(--line);
-                 border-radius:99px;padding:4px 12px;background:var(--glass)}
-  .drawerbody{flex:1;min-height:0;display:none;border-top:1px solid var(--line)}
-  body.drawer-open .drawerbody{display:flex;flex-direction:column}
-  .logtools{display:flex;align-items:center;gap:10px;padding:10px 22px;flex:none;
-            border-bottom:1px solid var(--line)}
-  .logtools b{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim)}
-  .receipt{display:none;padding:16px 22px;background:#16200fcc;font-size:13px;line-height:1.75;
-           max-height:40%;overflow:auto;border-bottom:1px solid var(--line)}
-  .receipt h3{margin:0 0 10px;font-size:13px;color:#b0e795}
-  .receipt .line{color:var(--muted)} .receipt b{color:var(--ink)}
-  .console{flex:1;min-height:0;overflow:auto;padding:16px 22px;
-           font:12.5px/1.85 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;
-           word-break:break-word;color:#c9cbd3}
-  .console .e{color:#ff9a90} .console .g{color:#9ee07f} .console .d{color:#6d707a}
+  /* ---------------------------------------------------------------- the log bar */
+  .logbar{flex:none;border-top:1px solid var(--line);background:#0a0c11cc;backdrop-filter:blur(20px);
+          transition:height .26s cubic-bezier(.4,0,.2,1);height:54px;display:flex;flex-direction:column}
+  body.drawer-open .logbar{height:44vh}
+  .stripline{display:flex;align-items:center;gap:14px;padding:0 26px;height:54px;flex:none;cursor:pointer}
+  .stripline b{font-size:10.5px;letter-spacing:.26em;text-transform:uppercase;color:var(--dim)}
+  .stripline .phase{font-size:13px;color:var(--muted);min-width:15ch}
+  .stripline .pct{font-size:12px;color:var(--dim);min-width:8ch;text-align:right}
+  .stripline .toggle{font-size:11.5px;color:var(--muted);border:1px solid var(--line);border-radius:var(--pill);
+                     padding:5px 13px;background:#ffffff08}
+  .logbody{flex:1;min-height:0;display:none;border-top:1px solid var(--line);flex-direction:column}
+  body.drawer-open .logbody{display:flex}
+  .logtools{display:flex;align-items:center;gap:12px;padding:11px 26px;flex:none;border-bottom:1px solid var(--line)}
+  .logtools b{font-size:10.5px;letter-spacing:.26em;text-transform:uppercase;color:var(--dim)}
+  .receipt{display:none;padding:16px 26px;background:#0f2118cc;font-size:13px;line-height:1.8;max-height:38%;
+           overflow:auto;border-bottom:1px solid var(--line)}
+  .receipt h3{margin:0 0 8px;font-size:13px;color:#b9f6d6}
+  .console{flex:1;min-height:0;overflow:auto;padding:16px 26px;font:12.5px/1.85 ui-monospace,SFMono-Regular,Menlo,monospace;
+           white-space:pre-wrap;word-break:break-word;color:#c6cbd6}
+  .console .e{color:#ff9d90} .console .g{color:#9ff0c4} .console .d{color:var(--dim)}
 
-  /* ------------------------------------------------------------------ docs */
-  .doc{max-width:900px}
-  .doc h3{font-size:21px;margin:34px 0 12px;font-weight:650;letter-spacing:-.02em}
-  .doc h3:first-of-type{margin-top:4px}
-  .doc p,.doc li{color:#c8cad2;font-size:14px}
-  .doc .lead{font-size:16.5px;color:var(--muted)}
-  .doc table{border-collapse:collapse;width:100%;margin:18px 0;font-size:13.5px}
+  /* ---------------------------------------------------------------- docs */
+  .docwrap{display:grid;grid-template-columns:1fr 208px;gap:32px;align-items:start}
+  .doc{max-width:78ch}
+  .doc h3{font-size:20px;margin:34px 0 10px;font-weight:620;letter-spacing:-.02em}
+  .doc h3:first-of-type{margin-top:0}
+  .doc p,.doc li{color:#c9cedb;font-size:14.2px}
+  .doc .lead{font-size:16px;color:var(--muted)}
+  .doc table{border-collapse:collapse;width:100%;margin:18px 0;font-size:13.4px}
   .doc th,.doc td{border:1px solid var(--line);padding:10px 13px;text-align:left;vertical-align:top}
-  .doc th{background:#ffffff0a;color:var(--muted);font-weight:650;font-size:11px;letter-spacing:.1em;
+  .doc th{background:#ffffff08;color:var(--dim);font-weight:600;font-size:10.5px;letter-spacing:.16em;
           text-transform:uppercase}
   .doc hr{border:0;border-top:1px solid var(--line);margin:30px 0}
-  .toc{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 26px}
-  .toc a{font-size:12.5px;padding:6px 13px;border:1px solid var(--line);border-radius:99px;
-         color:var(--muted);background:#ffffff09}
-  .toc a:hover{color:var(--ink);border-color:var(--line2);text-decoration:none}
-
-  dialog{border:1px solid var(--line);background:#15161acc;backdrop-filter:blur(26px);color:var(--ink);
-         border-radius:var(--r);max-width:700px;padding:0;box-shadow:var(--shadow)}
-  dialog::backdrop{background:#000000b3}
-  dialog .inner{padding:28px 30px}
-  dialog h3{margin:0 0 14px;font-size:19px}
+  .toc{position:sticky;top:0}
+  .toc a{display:block;font-size:12.5px;color:var(--muted);padding:7px 0;border-bottom:1px solid var(--line)}
+  .toc a:hover{color:var(--ink);text-decoration:none}
+  dialog{border:1px solid var(--line);background:#101319f2;backdrop-filter:blur(24px);color:var(--ink);
+         border-radius:var(--r2);max-width:660px;padding:0;box-shadow:var(--shadow)}
+  dialog::backdrop{background:#000000b8}
+  dialog .inner{padding:26px 28px}
+  dialog h3{margin:0 0 12px;font-size:18px}
   dialog p{font-size:13.5px;color:var(--muted);line-height:1.8}
-  @media (prefers-reduced-motion: reduce){ *{animation:none !important;transition:none !important} }
+  @media (max-width:1080px){.split,.cols,.docwrap{grid-template-columns:1fr}.toc{display:none}}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body class="fx-glow">
-<div class="atmos" id="bg" aria-hidden="true"><div class="orb"></div></div>
-<div class="overlay" id="fx" aria-hidden="true"></div>
+<div class="glow" id="bg" aria-hidden="true"><i></i><i></i></div>
+<div id="fx" aria-hidden="true"></div>
+<input type="checkbox" id="proxyAll" hidden /><input type="checkbox" id="restricted" hidden />
 
-<div class="shell" id="app">
-  <!-- ------------------------------------------------------------------ top bar -->
-  <header class="topbar">
-    <div class="mark">
-      <div class="cube"></div>
+<div class="frame" id="app">
+  <header class="top">
+    <div class="brand">
+      <svg viewBox="0 0 40 40" aria-hidden="true">
+        <defs>
+          <linearGradient id="aur" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#5ef2a8"/><stop offset="1" stop-color="#39c8ff"/>
+          </linearGradient>
+        </defs>
+        <rect x="1.4" y="1.4" width="37.2" height="37.2" rx="11.6" fill="#5ef2a81a"
+              stroke="url(#aur)" stroke-width="1.6"/>
+        <path d="M11.5 28.5V15.5a8.5 8.5 0 0 1 17 0v13" fill="none" stroke="url(#aur)"
+              stroke-width="3.4" stroke-linecap="round"/>
+        <path d="M20 8.5v11.5" stroke="#07080b" stroke-width="3.4" stroke-linecap="round"/>
+        <circle cx="20" cy="25.6" r="2.7" fill="url(#aur)"/>
+      </svg>
       <div><b>WebMC</b><span>launcher</span></div>
     </div>
-    <div class="tabs">
-      <button id="navPlay" class="on">
-        <svg viewBox="0 0 24 24"><polygon points="7,4 20,12 7,20" fill="currentColor" stroke="none"/></svg>
-        Play</button>
-      <button id="navMods">
-        <svg viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 7v10l9 4 9-4V7"/></svg>
-        Mods</button>
-      <button id="navSettings">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg>
-        Settings</button>
-      <button id="navDoc">
-        <svg viewBox="0 0 24 24"><path d="M4 5a2 2 0 012-2h9l5 5v11a2 2 0 01-2 2H6a2 2 0 01-2-2z"/><path d="M8 8h5M8 12h8M8 16h6"/></svg>
-        Documentation</button>
-    </div>
-    <div class="grow"></div>
-    <span class="status" id="conn"><i class="dot" id="cd"></i><span id="ct">connecting…</span></span>
-    <span class="status" id="where">—</span>
-    <a class="status" href="#" id="openlocal2" style="display:none">helper's own page</a>
-    <a class="status" href="#" id="stay" style="display:none">stay here instead</a>
+    <nav>
+      <button id="navPlay" class="on">Play</button>
+      <button id="navMods">Mods</button>
+      <button id="navSettings">Settings</button>
+      <button id="navDoc">Documentation</button>
+    </nav>
+    <span id="viewTitle" hidden></span>
+    <span class="pill" id="conn"><i class="dot" id="cd"></i><span id="ct">connecting…</span></span>
+    <span class="pill" id="where">—</span>
+    <a class="pill" href="#" id="openlocal2" style="display:none">helper's page</a>
+    <a class="pill" href="#" id="stay" style="display:none">stay here</a>
   </header>
+  <div class="hairline"></div>
 
-  <!-- ------------------------------------------------------------------ workspace -->
-  <div class="workspace">
-    <!-- play -->
-    <section class="pane on" id="viewPlay">
-      <div class="hero">
-        <div class="pad">
-          <div class="kicker" id="viewSub">real Minecraft, kept nowhere</div>
-          <h1 id="versionBig">1.21.11</h1>
-          <div class="lede">The real Java client with Fabric, running on this computer from one folder
-            under <code>/tmp</code> that is deleted the moment you close it. Your world, your mods and
-            your settings stay in this browser — nothing nests on the machine.</div>
-          <div class="chips">
-            <span class="chip" id="chipRunning">idle</span>
-            <span class="chip" id="chipMods">no mods</span>
-            <span class="chip" id="chipMemory">2G</span>
-            <span class="chip" id="chipAssets">assets: download</span>
-          </div>
-          <div class="picker">
-            <div>
-              <label for="version">Minecraft version</label>
-              <select id="version"></select>
+  <div class="body">
+    <section class="view on" id="viewPlay">
+      <div class="split">
+        <div class="card hero">
+          <div>
+            <div class="eyebrow" id="viewSub">real Minecraft, kept nowhere</div>
+            <h1 class="big" id="versionBig">1.21.11</h1>
+            <p class="lede">The real Java client with Fabric, running on this computer from one folder
+              under <code>/tmp</code> that is deleted the moment you close it. Your world, your mods and
+              your settings stay in this browser — nothing nests on the machine.</p>
+            <div class="chips">
+              <span class="chip" id="chipRunning">idle</span>
+              <span class="chip" id="chipMods">no mods</span>
+              <span class="chip" id="chipMemory">2G</span>
+              <span class="chip" id="chipAssets">assets: download</span>
             </div>
-            <div>
-              <label for="loader">Mod loader</label>
-              <select id="loader">
-                <option value="stable" selected>Fabric — newest stable</option>
-                <option value="latest">Fabric — newest</option>
-                <option value="custom">Fabric — a specific version…</option>
-                <option value="none">Vanilla — no Fabric</option>
-              </select>
-              <input id="loadercustom" placeholder="e.g. 0.19.5" style="display:none;margin-top:8px" />
-            </div>
-            <div>
-              <button class="play" id="play" disabled>▶&nbsp; PLAY</button>
-              <button class="stop" id="stop" style="display:none">■&nbsp; STOP</button>
+            <div class="fields">
+              <div><label for="version">Minecraft version</label><select id="version"></select></div>
+              <div><label for="loader">Mod loader</label>
+                <select id="loader">
+                  <option value="stable" selected>Fabric — newest stable</option>
+                  <option value="latest">Fabric — newest</option>
+                  <option value="custom">Fabric — a specific version…</option>
+                  <option value="none">Vanilla — no Fabric</option>
+                </select>
+                <input id="loadercustom" placeholder="e.g. 0.19.5" style="display:none;margin-top:8px" />
+              </div>
             </div>
           </div>
+          <div>
+            <button class="go" id="play" disabled>PLAY</button>
+            <button class="halt" id="stop" style="display:none">STOP</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="eyebrow">this machine</div>
+          <ul class="facts">
+            <li><span class="k">Java</span><span class="v" id="factJava">not looked for yet</span></li>
+            <li><span class="k">Sandbox</span><span class="v" id="factSandbox">—</span>
+              <span class="s" id="factSandboxSub">deleted when the session ends</span></li>
+            <li><span class="k">Storage</span><span class="v" id="factStorage">—</span>
+              <span class="s" id="factStorageSub">in this browser, never uploaded</span></li>
+            <li><span class="k">Sessions</span><span class="v" id="factSessions">none yet</span>
+              <span class="s">more than one can run at once</span></li>
+          </ul>
+          <div class="note" id="factJavaSub" style="margin-top:12px"></div>
         </div>
       </div>
 
-      <div class="facts">
-        <div class="fact"><div class="k">Java</div><div class="v" id="factJava">not looked for yet</div>
-          <div class="s" id="factJavaSub">fetched into the sandbox if this machine has none</div></div>
-        <div class="fact"><div class="k">Sandbox</div><div class="v" id="factSandbox">—</div>
-          <div class="s" id="factSandboxSub">deleted when the session ends</div></div>
-        <div class="fact"><div class="k">Storage</div><div class="v" id="factStorage">—</div>
-          <div class="s" id="factStorageSub">in this browser, never uploaded</div></div>
-        <div class="fact"><div class="k">Sessions</div><div class="v" id="factSessions">none yet</div>
-          <div class="s">more than one can run at once</div></div>
-      </div>
-
-      <div class="panel" id="statusCard">
-        <h2>Status<span class="grow"></span><span class="hint" id="pct"></span></h2>
-        <div class="track" id="bar"><i></i></div>
-        <div class="hint" style="margin-top:11px">
+      <div class="status">
+        <div class="statusline">
           <strong id="phase" style="color:var(--ink);font-weight:600">Ready</strong>
           <span id="instance"></span>
+          <span class="rail" id="bar"><i></i></span>
+          <span id="pct" style="min-width:7ch;text-align:right"></span>
         </div>
-        <div class="hint" id="netstat"></div>
+        <div class="note" id="netstat" style="margin-top:10px"></div>
         <div id="notready" style="display:none;margin-top:14px"></div>
-        <div id="offline" style="display:none;margin-top:14px">
-          <div class="bad" id="offlinetext"></div>
+        <div id="offline" style="display:none;margin-top:16px">
+          <div class="badbox" id="offlinetext"></div>
           <div id="shortcutbox" style="display:none">
-            <div class="hint" style="color:var(--ink);margin-top:14px">
-              <b>macOS: start the helper for me.</b> The Shortcut fetches it into <code>/tmp</code>,
-              runs it there, and when the session ends the helper deletes itself and its folder.
-              Nothing is installed, and nothing survives.
+            <div class="note" style="color:var(--ink);margin-top:16px">
+              <b>macOS: start the helper for me.</b> The Shortcut fetches it into <code>/tmp</code>, runs
+              it there, and when the session ends the helper deletes itself and its folder. Nothing is
+              installed, and nothing survives.
             </div>
             <button id="kickhelper" style="margin-top:11px">Start the helper for me</button>
-            <div class="hint" id="kicks" style="margin-top:9px"></div>
+            <div class="note" id="kicks" style="margin-top:9px"></div>
             <details style="margin-top:14px">
-              <summary>One-time: make that Shortcut (4 steps, about a minute)</summary>
+              <summary class="note" style="cursor:pointer">One-time: make that Shortcut (4 steps)</summary>
               <ol class="steps">
                 <li>Open <b>Shortcuts</b>, press <b>+</b>.</li>
                 <li>Add the action <b>Run Shell Script</b>.</li>
                 <li>Set <b>Pass Input</b> to <b>to stdin</b>, paste this:</li>
               </ol>
               <code id="shellline" style="display:block;padding:11px;margin-top:8px;white-space:pre-wrap;word-break:break-all"></code>
-              <button id="copyline" style="margin-top:10px">Copy the line</button>
-              <div class="hint" id="copyok" style="margin-top:8px"></div>
+              <button class="tiny" id="copyline" style="margin-top:10px">Copy the line</button>
+              <div class="note" id="copyok" style="margin-top:8px"></div>
               <ol class="steps" start="4">
                 <li>Name it exactly <b>WebMC Helper</b> and save.
                   <b>Shortcuts → Settings → Advanced → Allow Running Scripts</b> once.</li>
@@ -364,182 +372,296 @@
             </details>
           </div>
           <div id="gethelper" style="display:none">
-            <div class="hint" style="color:var(--ink);margin-top:14px"><b>Or install it once.</b></div>
+            <div class="note" style="color:var(--ink);margin-top:16px"><b>Or install it once.</b></div>
             <ol class="steps">
               <li><a id="zipdl" href="helper/webmc-helper.zip" download>Download webmc-helper.zip</a> and double-click it.</li>
               <li>Double-click <code>webmc-helper.command</code>: it installs itself and starts at every login.</li>
               <li>Come back and press PLAY.</li>
             </ol>
-            <div class="hint">Already running? <a href="#" id="openlocal">Open the helper's page</a>.</div>
+            <div class="note">Already running? <a href="#" id="openlocal">Open the helper's page</a>.</div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- mods -->
-    <section class="pane" id="viewMods">
+    <section class="view" id="viewMods">
       <div class="cols">
-        <div class="panel">
-          <h2>Your mods<span class="grow"></span><span class="tag" id="modcount"></span></h2>
-          <div class="drop" id="drop">
+        <div class="card">
+          <div class="eyebrow">your mods<span id="modcount" class="tag" style="margin-left:10px"></span></div>
+          <div class="drop" id="drop" style="margin-top:16px">
             <b>Drop mod .jar files here</b><br />or click to choose them
-            <div class="hint" style="margin-top:8px">Kept in this browser, never on the computer, and
+            <div class="note" style="margin-top:8px">Kept in this browser, never on the computer, and
               handed to the helper before each launch.</div>
           </div>
           <input type="file" id="picker" accept=".jar" multiple style="display:none" />
           <ul class="mods" id="modlist"></ul>
-          <div class="hint" id="modhint"></div>
+          <div class="note" id="modhint"></div>
         </div>
-        <div class="panel">
-          <h2>From Modrinth</h2>
-          <div class="row">
+        <div class="card">
+          <div class="eyebrow">from Modrinth</div>
+          <div style="display:flex;gap:10px;margin-top:16px">
             <input id="search" placeholder="sodium, lithium, iris…" />
-            <button class="fixed" id="dobsearch">Search</button>
+            <button id="dobsearch">Search</button>
           </div>
           <ul class="results" id="results"></ul>
-          <div class="hint" id="searchhint" style="margin-top:12px">Searched by the helper, so it works
+          <div class="note" id="searchhint" style="margin-top:12px">Searched by the helper, so it works
             even on a network where this browser cannot reach Modrinth.</div>
         </div>
       </div>
     </section>
 
-    <!-- settings -->
-    <section class="pane" id="viewSettings">
-      <div class="cols">
-        <div class="panel">
-          <h2>The game</h2>
-          <div class="cols">
-            <div><label for="username">Username (offline)</label>
-              <input id="username" value="Player" maxlength="16" /></div>
-            <div><label for="memory">Memory</label>
-              <input id="memory" value="2G" /></div>
+    <section class="view" id="viewSettings">
+      <div class="stack">
+        <div class="card">
+          <div class="eyebrow">the game</div>
+          <div class="rowline" style="margin-top:8px">
+            <div class="rl"><b>Username</b><span>Offline name, as servers accept it</span></div>
+            <div class="rc wide"><input id="username" value="Player" maxlength="16" /></div>
           </div>
-          <div style="margin-top:14px"><label for="assets">Sounds and textures</label>
-            <select id="assets">
+          <div class="rowline">
+            <div class="rl"><b>Memory</b><span>How much the game may use</span></div>
+            <div class="rc wide"><input id="memory" value="2G" /></div>
+          </div>
+          <div class="rowline">
+            <div class="rl"><b>Sounds and textures</b>
+              <span>430 MB of assets; they make the game look and sound like itself</span></div>
+            <div class="rc wide"><select id="assets">
               <option value="1" selected>Download them (~430 MB, once a session)</option>
-              <option value="0">Skip — silent and textureless, but fast</option></select></div>
-          <label class="check" style="margin-top:16px">
-            <input type="checkbox" id="restore" checked />
-            <span>Put this browser's last session back before playing
-              <span class="hint" style="display:block">Worlds, options and screenshots live in this
-                browser. Nothing is uploaded.</span></span>
-          </label>
-        </div>
-
-        <div class="panel">
-          <h2>Appearance</h2>
-          <div class="cols">
-            <div><label for="fxSelect">Screen effect</label>
-              <select id="fxSelect">
-                <option value="fx-glow">Depth — a soft vignette</option>
-                <option value="fx-grid">Grid — a faint lattice</option>
-                <option value="fx-scan">Scanlines — a slow sweep</option>
-                <option value="none">None — flat and fast</option>
-              </select></div>
-            <div><label for="motionSelect">Background</label>
-              <select id="motionSelect">
-                <option value="follow">Follows the pointer</option>
-                <option value="still">Still</option>
-              </select></div>
+              <option value="0">Skip them — fast, and the game will look broken</option>
+            </select></div>
           </div>
-          <div class="hint" style="margin-top:13px">The orb follows the pointer as a composited move,
-            once per animation frame. Turn it off on a machine that would rather have the cycles.</div>
+          <div class="rowline">
+            <div class="rl"><b>Put this browser's last session back</b>
+              <span>Worlds, options and screenshots live in this browser. Nothing is uploaded.</span></div>
+            <div class="rc"><input type="checkbox" id="restore" checked /></div>
+          </div>
         </div>
-      </div>
 
-      <div class="panel">
-        <h2>If a network blocks things</h2>
-        <p class="hint" style="color:var(--ink);margin:0 0 14px">
-          Most people can ignore this panel. It is for a school or workplace network that blocks
-          <b>Mojang</b> (so the game will not download) or blocks <b>game ports</b> (so you cannot join
-          a server).
-        </p>
-        <div class="cols3">
-          <div><label for="relayMode">Relay</label>
-            <select id="relayMode">
+        <div class="card">
+          <div class="eyebrow">appearance</div>
+          <div class="rowline" style="margin-top:8px">
+            <div class="rl"><b>Screen effect</b><span>The layer over the whole window</span></div>
+            <div class="rc wide"><select id="fxSelect">
+              <option value="fx-glow">Depth — a soft vignette</option>
+              <option value="fx-grid">Grid — a faint lattice</option>
+              <option value="fx-scan">Scanlines — a slow sweep</option>
+              <option value="none">None — flat and fast</option>
+            </select></div>
+          </div>
+          <div class="rowline">
+            <div class="rl"><b>Background</b><span>Two blobs, drifting slowly</span></div>
+            <div class="rc wide"><select id="motionSelect">
+              <option value="follow">Follows the pointer</option>
+              <option value="still">Still</option>
+            </select></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="eyebrow">if a network blocks things</div>
+          <p class="note" style="margin:12px 0 4px">
+            <b style="color:var(--ink)">One setting, everything uses it.</b> When a relay is in play it
+            carries the downloads <i>and</i> the game's own connections — joining, authenticating, skins.
+            Choose <b>Never</b> to opt out completely.
+          </p>
+          <div class="rowline">
+            <div class="rl"><b>Relay</b><span id="relayInUse">—</span></div>
+            <div class="rc wide"><select id="relayMode">
               <option value="auto" selected>Automatic — use the built-in one if there is one</option>
-              <option value="off">Never — always connect directly</option>
+              <option value="off">Never — connect directly, even if a network blocks it</option>
               <option value="custom">My own relay…</option>
             </select></div>
-          <div><label for="server">Join this server straight away (optional)</label>
-            <input id="server" placeholder="play.example.net:25565" />
-            <span class="hint" style="display:block;margin-top:7px">SRV records are followed, so a
-              name that is only a signpost still works. Servers that refuse datacenter addresses can
-              still refuse this one — that is the server's choice, not something a relay can change.</span></div>
-          <div><label>&nbsp;</label>
-            <button id="relayTest" style="width:100%">Test the relay</button></div>
-        </div>
-        <div id="relayCustomRow" style="display:none;margin-top:14px">
-          <label for="relay">Your relay's address</label>
-          <input id="relay" placeholder="https://webmc-relay.you.workers.dev" />
-        </div>
-        <div class="hint" id="relayInUse" style="margin-top:11px"></div>
-        <div class="hint" id="relayState" style="margin-top:6px"></div>
-        <div class="hint" style="margin-top:10px">
-          <b>Most people never touch this.</b> On Automatic the launcher uses its own relay when
-          your network needs one and connects directly when it does not — and a relay serves
-          downloads, the game's own connections and the server below, so it is one setting, not
-          three. Choose <b>My own relay</b> to use yours instead: deploy it once with
-          <code>npx wrangler deploy relay/relay.js --name webmc-relay --compatibility-date 2026-01-01</code>,
-          paste the URL, and verify it from the blocked network with
-          <code>python3 relay/test-relay.py YOUR-URL</code>.
-        </div>
-        <label class="check" style="margin-top:16px">
-          <input type="checkbox" id="proxyAll" />
-          <span>Let the game join servers through this
-            <span class="hint" style="display:block">Everything the game connects to — joining,
-              authenticating, skins — leaves through the relay, or through a proxy you already run if
-              there is one (a VPN client, Shadowsocks, an SSH tunnel on the usual ports). <b>The server
-              then sees the relay's address instead of yours.</b> This is what makes joining work on a
-              network that blocks game ports, and it is also what a filter would see as a plain HTTPS
-              connection — nothing is disguised beyond that.</span></span>
-        </label>
-        <details style="margin-top:18px">
-          <summary>Advanced: restricted mode</summary>
-          <div class="hint" style="margin-top:11px">
-            <label class="check" style="margin-bottom:9px">
-              <input type="checkbox" id="restricted" />
-              <span>Bring our own Java, and look nowhere else on this machine</span>
-            </label>
-            It helps when Java <b>is not installed</b>, or the machine's Java is <b>blocked</b>: a
-            runtime is fetched into the session's folder and dies with it.
-            <br><br>
-            It does <b>not</b> get around a policy that blocks unknown programs (AppLocker, WDAC, MDM,
-            screen-time or parental controls). Those are enforced by the operating system, and nothing
-            here — and nothing any other launcher could do — changes that. On such a machine the only
-            thing that runs is a launcher that installs nothing at all: the browser tier.
           </div>
-        </details>
-      </div>
+          <div class="rowline" id="relayCustomRow" style="display:none">
+            <div class="rl"><b>Your relay's address</b><span>Anyone can run one; see Documentation</span></div>
+            <div class="rc wide"><input id="relay" placeholder="https://webmc-relay.you.workers.dev" /></div>
+          </div>
+          <div class="rowline">
+            <div class="rl"><b>Join this server straight away</b>
+              <span>SRV records are followed. Optional.</span></div>
+            <div class="rc wide"><input id="server" placeholder="play.example.net:25565" /></div>
+          </div>
+          <div class="rowline">
+            <div class="rl"><b>Check it</b><span id="relayState">Nothing tested yet.</span></div>
+            <div class="rc"><button id="relayTest">Test the relay</button></div>
+          </div>
+        </div>
 
-      <div class="panel">
-        <h2>The helper</h2>
-        <div class="row">
-          <input id="helper" placeholder="http://127.0.0.1:7645" />
-          <button class="fixed" id="connect">Connect</button>
+        <div class="card">
+          <div class="eyebrow">the helper on this machine</div>
+          <div class="rowline" style="margin-top:8px">
+            <div class="rl"><b>Address</b><span id="connhint">—</span></div>
+            <div class="rc wide"><input id="helper" placeholder="http://127.0.0.1:7645" />
+              <button id="connect">Connect</button></div>
+          </div>
+          <div class="rowline">
+            <div class="rl"><b>What is on this machine</b><span id="machineState">checking…</span></div>
+            <div class="rc">
+              <button id="copydiag">Copy diagnostics</button>
+              <button id="help">How this works</button>
+              <button class="danger" id="purge">Leave nothing</button>
+            </div>
+          </div>
+          <div class="note" id="diagstate" style="margin-top:10px"></div>
+          <div class="note" id="purgeState" style="margin-top:6px"></div>
         </div>
-        <div class="hint" id="connhint" style="margin-top:11px"></div>
-        <div style="margin-top:16px;display:flex;gap:11px;flex-wrap:wrap">
-          <button id="copydiag">Copy diagnostics</button>
-          <button id="help">How this works</button>
-          <button class="danger" id="purge">Leave nothing on this machine</button>
-        </div>
-        <div class="hint" id="diagstate" style="margin-top:10px"></div>
-        <div class="hint" id="machineState" style="margin-top:11px"></div>
-        <div class="hint" id="purgeState" style="margin-top:6px"></div>
       </div>
     </section>
 
-    <!-- documentation -->
-    <section class="pane" id="viewDoc">
-      <div class="panel doc">
-        <h2>Documentation</h2>
-        <p class="lead">WebMC is a Minecraft launcher whose interface is a web page, and whose promise
-          is that the computer it runs on is borrowed rather than used: the game, the Java runtime and
-          the helper are all deleted when the session ends.</p>
+    <section class="view" id="viewDoc">
+      <div class="docwrap">
+        <div class="doc">
+          <p class="lead">WebMC is a Minecraft launcher whose interface is a web page, and whose promise
+            is that the computer it runs on is borrowed rather than used: the game, the Java runtime
+            and the helper are all deleted when the session ends.</p>
+          <h3 id="d1">Why the page cannot launch anything</h3>
+          <p>A web page cannot start a program, read a file, or look inside <code>/tmp</code>. There is
+            no API for it: WebAssembly and an in-page JVM are sandboxed, <code>file://</code> gives an
+            opaque origin that cannot even reach <code>127.0.0.1</code>, a custom protocol handler and a
+            browser extension both need an installer first, and a page has never been allowed to run a
+            file it downloaded.</p>
+          <p>That is not an oversight. The features that once did allow it — ActiveX controls, Java
+            applets, Netscape plugins, Flash — were all removed precisely because a page being able to
+            run native code is a security hole rather than a feature.</p>
+          <p>Local Network Access, in current Chromium, makes the boundary explicit. Measured from a
+            public page (this launcher on GitHub Pages) to the helper on <code>127.0.0.1</code>:</p>
+          <table>
+            <tr><th>Route</th><th>Result</th></tr>
+            <tr><td><code>fetch()</code></td><td>Refused, or a permission prompt — “Permission was denied
+              for this request to access the <code>loopback</code> address space.”</td></tr>
+            <tr><td>an <code>&lt;iframe&gt;</code></td><td>Refused: the frame tree comes back with no child
+              frame at all. A blocked frame still fires <code>load</code>, so that event proves nothing.</td></tr>
+            <tr><td>a top-level navigation</td><td><b>Allowed</b>, with no prompt and no console error.</td></tr>
+          </table>
+          <p>Two things are worth telling an administrator, because they decide whether any of this works
+            on a managed machine: the permission is called <b>Local Network Access</b> in Chromium's site
+            settings, and one policy can refuse it outright — <code>LocalNetworkAccessBlockedForUrls</code>.
+            Where that policy is set, nothing on a page can reach a local helper at all, and the helper's
+            own page is the only route left.</p>
+          <p>That last row is why this launcher behaves the way it does: the GitHub page cannot
+            <i>drive</i> the helper, so it hands the tab to the helper's own page the moment it loads,
+            which is allowed to talk to it — same origin, no prompt.</p>
+
+          <h3 id="d2">What the helper does, step by step</h3>
+          <ol>
+            <li><b>One staging directory.</b> Everything goes there and nowhere else: a Python runtime if
+              the machine has none, the helper, and later the game.</li>
+            <li><b>A Java runtime, found or fetched.</b> The version's own metadata says which Java it
+              needs (<code>javaVersion.majorVersion</code>), and if this machine has nothing suitable the
+              runtime is fetched into the staging directory and dies with it.</li>
+            <li><b>The game, from Mojang.</b> Client, the version's own libraries and the assets, every
+              file verified against its published SHA-1, downloaded in parallel.</li>
+            <li><b>The loader and your mods.</b> Fabric's profile from Fabric's own metadata; your jars
+              from this browser's storage, or fetched from Modrinth for the version you picked.</li>
+            <li><b>The real client starts.</b> An ordinary <code>java …KnotClient</code> process, with a
+              normal window, exactly as any launcher would run it.</li>
+            <li><b>You watch it here.</b> The client's own output, streamed live into the log at the
+              bottom of the window — which is why a crash is readable instead of mysterious.</li>
+            <li><b>When it exits</b> — closed, crashed, or stopped from here — the helper collects saves,
+              logs, screenshots, configuration and crash reports into one zip.</li>
+            <li><b>This page takes that zip</b> into browser storage, and tells the helper to delete the
+              sandbox. Nobody has to press anything: saving is automatic.</li>
+            <li><b>Nothing is left for you to tidy up.</b> If the page never comes back the helper
+              deletes the sandbox itself after a deadline; if the helper is killed outright the next one
+              finds the leftover by its owner file; if the machine reboots the OS clears its own temp
+              directory. <b>Settings → What is on this machine</b> shows the inventory, and
+              <b>Leave nothing</b> removes all of it.</li>
+          </ol>
+
+          <h3 id="d3">What is left afterwards</h3>
+          <table>
+            <tr><th>How you start it</th><th>What remains when the session ends</th></tr>
+            <tr><td><b>Transient</b> — the macOS Shortcut</td>
+              <td><b>Nothing at all.</b> The staging directory goes too: the Python runtime, the helper,
+                the Java runtime, the game, the sandbox.</td></tr>
+            <tr><td><b>Installed</b> — the double-click file</td>
+              <td><b>Two small files</b>: one Python file in Application Support, one launch agent so it
+                starts at every login. The game is still deleted every session, and
+                <b>Leave nothing</b> removes both.</td></tr>
+            <tr><td><b>Downloads, if you ask for them to be kept</b></td>
+              <td>A cache directory of Mojang's files, so the next launch does not download them again.
+                It is off unless you turn it on, and it is named in the inventory above.</td></tr>
+            <tr><td><b>Browser storage</b></td>
+              <td>Your world, your mods and your settings, in this origin's own storage. That is the one
+                thing which persists on purpose — it is what makes the game disposable.</td></tr>
+          </table>
+
+          <h3 id="d4">Where your world lives</h3>
+          <p>In this browser, under this page's origin. It is never uploaded, and there is no account.
+            The consequence worth knowing: storage belongs to an <i>origin</i>, so the hosted page and the
+            helper's page are different stores. That is exactly why the hosted page hands the tab over on
+            arrival instead of running a session itself — one origin, one world, no surprises.</p>
+
+          <h3 id="d5">Networks that block things</h3>
+          <p><b>The relay is one setting and it carries everything.</b> Switched on, every download and
+            every connection the game itself makes — joining a server, authenticating, fetching skins —
+            travels inside ordinary HTTPS to the relay, which does the fetching and the dialling from
+            outside the network that is blocking you. It is a Cloudflare Worker; two of them are
+            deployed and built into the helper, so nobody has to run a command or make an account.</p>
+          <table>
+            <tr><th>What is blocked</th><th>What to do</th></tr>
+            <tr><td>Mojang is unreachable</td>
+              <td>Nothing: on <b>Automatic</b> the relay fetches for you over ordinary HTTPS and caches
+                what it fetched at the edge. A network that blocks Mojang is exactly what it exists for.</td></tr>
+            <tr><td>Minecraft servers are unreachable (only 443 gets out)</td>
+              <td>Also nothing, for the same reason: the game's connections ride inside the relay too.
+                Put the server in <b>Join this server</b> and the client joins it automatically. The relay
+                refuses any session that does not begin with a Minecraft handshake, because a relay that
+                dialled any port for any bytes would be a port scanner.</td></tr>
+            <tr><td>The relay's own hostname is blocked</td>
+              <td>It is asked for through a proxy you already run, if there is one, and there are two
+                hostnames to try. If neither answers you get a direct connection rather than an error.</td></tr>
+            <tr><td>Servers that refuse datacenter addresses</td>
+              <td>The relay dials from a datacenter, and some servers refuse those. That is the server's
+                choice and no relay can change it — try another server, or <b>Never</b> and a proxy of
+                your own.</td></tr>
+            <tr><td>A program you did not write is blocked</td>
+              <td>Nothing here changes that. AppLocker, WDAC, MDM, screen-time and parental controls are
+                enforced by the operating system, and no launcher can get around them. On such a machine
+                the only thing that runs is a launcher that installs nothing at all: the browser tier.</td></tr>
+          </table>
+
+          <h3 id="d6">More than one window</h3>
+          <p>Every PLAY is its own session, with its own sandbox, its own Java process and its own log.
+            Two windows can run at once, including two different versions, and stopping one does not touch
+            the other. Each finished session is stored and each deletes its own sandbox.</p>
+
+          <h3 id="d7">Mod loaders</h3>
+          <table>
+            <tr><th>Loader</th><th>State</th></tr>
+            <tr><td><b>Fabric</b></td><td>Works, for any version Fabric supports: mods are loaded at play
+              time by a real JVM, from jars you dropped here or from Modrinth.</td></tr>
+            <tr><td>Forge, NeoForge</td><td>Not supported yet: their builds resolve and their libraries
+              download, but neither ships a usable client jar — their installer runs a patching step over
+              Mojang's jar and their bootstrap refuses to start without it. Asking for one is refused with
+              that explanation rather than half-launched.</td></tr>
+          </table>
+
+          <h3 id="d8">When something goes wrong</h3>
+          <table>
+            <tr><th>Symptom</th><th>Cause and answer</th></tr>
+            <tr><td>Nothing happens when you press PLAY</td>
+              <td>No helper is running. The status panel offers the Shortcut, the download, or the link to
+                the helper's own page.</td></tr>
+            <tr><td>“no helper” although it is running</td>
+              <td>This browser blocked the request: use the helper's own page, or allow Local Network
+                Access for this site.</td></tr>
+            <tr><td>A launch fails with <code>Failed to connect</code> to Mojang</td>
+              <td>The network blocks it. Leave the relay on Automatic.</td></tr>
+            <tr><td>The game starts silent and textureless</td>
+              <td>Assets were skipped; 26.x will not even start without them. Turn them back on.</td></tr>
+            <tr><td>A crash</td>
+              <td>Read the log, or take the session zip: it holds the client's own log and any crash
+                report. <b>Copy diagnostics</b> puts everything worth pasting on your clipboard.</td></tr>
+          </table>
+          <hr>
+          <p class="note">The promise in one sentence: the game runs on your computer, from a directory
+            under <code>/tmp</code> that is deleted when it ends, while your world and your mods live in
+            your browser — so the machine is borrowed for an hour rather than changed.</p>
+        </div>
         <div class="toc">
           <a href="#d1">Why the page cannot launch anything</a>
-          <a href="#d2">What the helper does, step by step</a>
+          <a href="#d2">What the helper does</a>
           <a href="#d3">What is left afterwards</a>
           <a href="#d4">Where your world lives</a>
           <a href="#d5">Networks that block things</a>
@@ -547,174 +669,23 @@
           <a href="#d7">Mod loaders</a>
           <a href="#d8">When something goes wrong</a>
         </div>
-
-        <h3 id="d1">Why the page cannot launch anything</h3>
-        <p>This is the first thing to understand, because everything else follows from it. A web page
-          cannot start a program, read a file, or look inside <code>/tmp</code>. There is no API for
-          it: WebAssembly and an in-page JVM are sandboxed, <code>file://</code> gives an opaque origin
-          that cannot even reach <code>127.0.0.1</code>, a custom protocol handler and a browser
-          extension both need an installer first, and a page has never been allowed to run a file it
-          downloaded.</p>
-        <p>That is not an oversight. The features that once did allow it — ActiveX controls, Java
-          applets, Netscape plugins, Flash — were all removed precisely because a page being able to run
-          native code is a security hole rather than a feature.</p>
-        <p>Local Network Access, in current Chromium, makes the boundary explicit. Measured from a
-          public page (this launcher on GitHub Pages) to the helper on <code>127.0.0.1</code>:</p>
-        <table>
-          <tr><th>Route</th><th>Result</th></tr>
-          <tr><td><code>fetch()</code></td><td>Refused, or a permission prompt — “Permission was denied
-            for this request to access the <code>loopback</code> address space.”</td></tr>
-          <tr><td>an <code>&lt;iframe&gt;</code></td><td>Refused: the frame tree comes back with no
-            child frame at all. A blocked frame still fires <code>load</code>, so that event proves
-            nothing.</td></tr>
-          <tr><td>a top-level navigation</td><td><b>Allowed</b>, with no prompt and no console
-            error.</td></tr>
-        </table>
-        <p>Two things are worth telling an administrator, because they decide whether any of this
-          works on a managed machine: the permission is called <b>Local Network Access</b> in
-          Chromium’s site settings, and one policy can refuse it outright —
-          <code>LocalNetworkAccessBlockedForUrls</code>. Where that policy is set, nothing on a page
-          can reach a local helper at all, and the helper's own page (which is the same origin as the
-          helper) is the only route left.</p>
-        <p>That last row is why this launcher behaves the way it does: the GitHub page cannot
-          <i>drive</i> the helper, so it hands the tab to the helper's own page the moment it loads,
-          which is allowed to talk to it — same origin, no prompt.</p>
-
-        <h3 id="d2">What the helper does, step by step</h3>
-        <ol>
-          <li><b>One staging directory.</b> Everything goes there and nowhere else: a Python runtime if
-            the machine has none, the helper, and later the game.</li>
-          <li><b>A Java runtime, found or fetched.</b> Nothing needs to be installed; if the machine has
-            no usable Java, a JRE is downloaded into the staging directory and dies with it.</li>
-          <li><b>The game, from Mojang.</b> Client, the version's own libraries and the assets, every
-            file verified against its published SHA-1, downloaded in parallel into the sandbox.</li>
-          <li><b>The loader and your mods.</b> Fabric's profile from Fabric's own metadata; your jars
-            from this browser's storage, or fetched from Modrinth for the version you picked.</li>
-          <li><b>The real client starts.</b> An ordinary
-            <code>java …KnotClient</code> process, with a normal window, exactly as any launcher would
-            run it.</li>
-          <li><b>You watch it here.</b> The client's own output, streamed live into the drawer at the
-            bottom of the window — which is why a crash is readable instead of mysterious.</li>
-          <li><b>When it exits</b> — closed, crashed, or stopped from here — the helper collects saves,
-            logs, screenshots, configuration, crash reports and its own account of the session into one
-            zip.</li>
-          <li><b>This page takes that zip</b> into browser storage, and tells the helper to delete the
-            sandbox. Nobody has to press anything: saving is automatic.</li>
-          <li><b>Nothing is left for you to tidy up.</b> If the page never comes back the helper
-            deletes the sandbox itself after a deadline; if the helper is killed outright the next one
-            finds the leftover by its owner file; if the machine reboots the OS clears its own temp
-            directory.</li>
-        </ol>
-
-        <h3 id="d3">What is left afterwards</h3>
-        <table>
-          <tr><th>How you start it</th><th>What remains when the session ends</th></tr>
-          <tr><td><b>Transient</b> — the macOS Shortcut, or <code>WEBMC_TRANSIENT=1</code></td>
-            <td><b>Nothing at all.</b> The staging directory goes too: the Python runtime, the helper,
-              the Java runtime, the game, the sandbox.</td></tr>
-          <tr><td><b>Installed</b> — the double-click file, or <code>--install</code></td>
-            <td><b>Two small files</b>: one Python file in Application Support, one launch agent so it
-              starts at every login. The game is still deleted every session, and
-              <code>--uninstall</code> removes both.</td></tr>
-          <tr><td><b>Browser storage</b></td>
-            <td>Your world, your mods and your settings, in this origin's own storage. That is the one
-              thing which persists on purpose — it is what makes the game disposable.</td></tr>
-        </table>
-        <p><code>webmc_helper.py --audit</code> prints exactly what the helper has on the machine and
-          nothing else.</p>
-
-        <h3 id="d4">Where your world lives</h3>
-        <p>In this browser, under this page's origin. It is never uploaded, and there is no account.
-          The consequence worth knowing: storage belongs to an <i>origin</i>, so the hosted page and
-          the helper's page are different stores. That is exactly why the hosted page hands the tab
-          over on arrival instead of running a session itself — one origin, one world, no surprises.</p>
-
-        <h3 id="d5">Networks that block things</h3>
-        <table>
-          <tr><th>What is blocked</th><th>What to do</th></tr>
-          <tr><td>A proxy is required for all outbound traffic</td>
-            <td>The helper detects a SOCKS5 proxy on <code>127.0.0.1</code> (1080, 1088, 10808, 7890) and
-              uses it, resolving names at the proxy, or takes <code>--proxy socks5h://host:port</code>.</td></tr>
-          <tr><td>Mojang is unreachable</td>
-            <td><b>Automatic.</b> The launcher's own relay fetches for you over ordinary HTTPS, from
-              Cloudflare instead of from this machine, and caches what it fetched at the edge. A network that blocks the relay's own hostname is
-              answered with the same relay somewhere it does not — the Worker and a Node version
-              of it are both in this repository. A
-              network that blocks Mojang is exactly what it exists for, so nobody has to deploy
-              anything. <b>Settings → Relay → My own relay</b> points it at one you deployed instead,
-              and <b>Never</b> turns it off.</td></tr>
-          <tr><td>Java is not installed, or the machine's Java is blocked</td>
-            <td><b>Advanced: restricted mode</b> — a runtime fetched into the session's folder, using
-              nothing the machine has. It does <b>not</b> get past a policy that blocks unknown
-              programs: AppLocker, WDAC, MDM, screen-time and parental controls are enforced by the
-              operating system, and no launcher can change that. On such a machine the only thing that
-              runs is the browser tier.</td></tr>
-          <tr><td>Minecraft servers are unreachable (only 443 gets out)</td>
-            <td>Put the server in <b>Settings → Join this server</b> and tick <b>Send the game through
-              the relay</b>. The game's connections travel inside a WebSocket to the relay, which dials
-              the server, and the client joins automatically. The protocol is the
-              <code>goldproxy.v1</code> one this repository's gateway already speaks; the relay refuses
-              any session that does not begin with a Minecraft handshake, because a relay that dialled
-              any port for any bytes would be a port scanner.</td></tr>
-        </table>
-
-        <h3 id="d6">More than one window</h3>
-        <p>Every PLAY is its own session, with its own sandbox, its own Java process and its own log.
-          Two windows can run at once, including two different versions, and stopping one does not
-          touch the other. Each finished session is stored and each deletes its own sandbox.</p>
-
-        <h3 id="d7">Mod loaders</h3>
-        <table>
-          <tr><th>Loader</th><th>State</th></tr>
-          <tr><td><b>Fabric</b></td><td>Works, for any version Fabric supports: mods are loaded at play
-            time by a real JVM, from jars you dropped here or from Modrinth.</td></tr>
-          <tr><td>Forge, NeoForge</td><td>Not supported yet: their builds resolve and their libraries
-            download, but neither ships a usable client jar — their installer runs a patching step over
-            Mojang's jar and their bootstrap refuses to start without it. Asking for one is refused with
-            that explanation rather than half-launched.</td></tr>
-        </table>
-
-        <h3 id="d8">When something goes wrong</h3>
-        <table>
-          <tr><th>Symptom</th><th>Cause and answer</th></tr>
-          <tr><td>Nothing happens when you press PLAY</td>
-            <td>No helper is running. The status panel offers the Shortcut, the download, or the link to
-              the helper's own page.</td></tr>
-          <tr><td>“no helper” although it is running</td>
-            <td>This browser blocked the request: use the helper's own page, or allow Local Network
-              Access for this site.</td></tr>
-          <tr><td>A launch fails with <code>Failed to connect</code> to Mojang</td>
-            <td>The network blocks it, or a proxy that was up has gone. Set a relay, or restart the
-              proxy.</td></tr>
-          <tr><td>The game starts silent and textureless</td>
-            <td>Assets were skipped or failed; the log says which.</td></tr>
-          <tr><td>A crash</td>
-            <td>Read the drawer, or take the session zip: it holds the client's own log and any crash
-              report. <b>Copy diagnostics</b> in Settings puts everything worth pasting on your
-              clipboard.</td></tr>
-        </table>
-        <hr>
-        <p class="hint">The promise in one sentence: the game runs on your computer, from a directory
-          under <code>/tmp</code> that is deleted when it ends, while your world and your mods live in
-          your browser — so the machine is borrowed for an hour rather than changed.</p>
       </div>
     </section>
   </div>
 
-  <!-- ------------------------------------------------------------------ drawer -->
-  <div class="drawer">
-    <div class="strip" id="drawerStripRow">
+  <div class="logbar">
+    <div class="stripline" id="drawerStripRow">
       <i class="dot" id="cdot2"></i>
       <b>Activity</b>
       <span class="phase" id="logState">waiting</span>
-      <div class="track" id="drawerTrack"><i></i></div>
+      <span class="rail" id="drawerTrack"><i></i></span>
       <span class="pct" id="drawerPct"></span>
       <button class="toggle" id="logHide">Show log</button>
     </div>
-    <div class="drawerbody">
+    <div class="logbody">
       <div class="logtools">
-        <b>Log</b><span class="hint" id="logFor">no session</span><span class="grow"></span>
-        <button class="tiny" id="logClear">Clear the view</button>
+        <b>Log</b><span class="note" id="logFor">no session</span><span style="flex:1"></span>
+        <button class="tiny ghost" id="logClear">Clear the view</button>
       </div>
       <div class="receipt" id="receipt"></div>
       <div class="console" id="log"><span class="d">The helper's log appears here — including
@@ -726,17 +697,18 @@ Minecraft's own, so a crash is readable instead of mysterious.</span></div>
 <dialog id="about">
   <div class="inner">
     <h3>How this works</h3>
-    <p>Minecraft never becomes a web app here. A helper on this machine downloads the real client and
-      the Java runtime into one directory under <code>/tmp</code>, starts it with Fabric, and when the
-      session ends it hands the saves to your browser and deletes the directory.</p>
+    <p>Minecraft never becomes a web app here. A helper on this machine downloads the real client and the
+      Java runtime into one directory under <code>/tmp</code>, starts it with Fabric, and when the session
+      ends it hands the saves to your browser and deletes the directory.</p>
     <p>This page cannot start a program, read a file, or see <code>/tmp</code> — the helper does that
       part. <b>Documentation</b> in the tabs above has the long version.</p>
-    <div class="hint" id="aboutkvs" style="margin-top:13px"></div>
+    <div class="note" id="aboutkvs" style="margin-top:13px"></div>
     <div style="margin-top:18px;text-align:right"><button id="aboutclose">Close</button></div>
   </div>
 </dialog>
 
 <script>
+
 "use strict";
 const $ = (id) => document.getElementById(id);
 const LS = "webmc.local.";
@@ -963,6 +935,8 @@ async function probe(explicit){
   try {
     const hello = await jget("/api/hello", 2500);
     state.online = true; state.hello = hello;
+    if (typeof showMachineState === "function") showMachineState();
+    if (typeof showRelayInUse === "function") showRelayInUse();
     setConn("ok", "helper " + hello.version);
     $("offline").style.display = "none";
     $("where").textContent = hello.platform.os + "/" + hello.platform.arch + " · " + Store.kind +
@@ -1312,8 +1286,8 @@ async function launch(){
       assets: $("assets").value === "1",
       relay: relayChoice(),
       tunnelServer: $("server").value.trim() || null,
-      tunnelEverything: $("proxyAll").checked,
-      restricted: $("restricted").checked,
+      tunnelEverything: $("relayMode").value !== "off",
+      restricted: false,
       // the helper keeps its own copy of the last session, so "restore" also decides whether to
       // start from that when this browser has nothing (a different origin does exactly that)
       restore: $("restore").checked
@@ -1404,6 +1378,7 @@ async function diagnostics(){
   window.applyFx = (value) => {
     document.body.className = document.body.className.replace(/\bfx-\S+/g, "").trim();
     if (value && value !== "none") document.body.classList.add(value);
+    document.body.classList.toggle("motion-follow", (localStorage.getItem(LS + "motion") || "follow") === "follow");
     try { localStorage.setItem(LS + "fx", value || "none"); } catch(e){}
   };
 })();
@@ -1486,6 +1461,8 @@ function relayUrlToTest(){
 // The promise, made checkable from the page: what of ours is on this machine, and a way to remove it
 // without a terminal. Downloads are the one thing that grows on its own, so they are named.
 function showMachineState(){
+  if (!state.hello){ jget("/api/hello", 3000).then((h) => { state.hello = h; showMachineState(); })
+                                      .catch(() => {}); return; }
   const el = $("machineState");
   if (!el) return;
   const items = (state.hello && state.hello.footprint) || [];
@@ -1637,7 +1614,9 @@ $("openlocal2").onclick = (e) => { e.preventDefault(); window.open("http://127.0
     $("restricted").checked = localStorage.getItem(LS + "restricted") === "1";
   } catch(e){}
   // a soft arrival rather than a hard cut
-  document.querySelector(".panel").animate(
+  // a small entrance for whatever the first card is called in this shell
+  const firstCard = document.querySelector(".card, .panel");
+  if (firstCard) firstCard.animate(
     [{ opacity:0, transform:"translateY(6px)" }, { opacity:1, transform:"none" }],
     { duration:340, easing:"ease-out" });
   $("helper").value = state.helper || "http://127.0.0.1:7645";
@@ -1708,6 +1687,7 @@ $("openlocal2").onclick = (e) => { e.preventDefault(); window.open("http://127.0
     if (!/exited|cancelled/i.test(st)) showRecovery(j);
   });
 })();
+
 </script>
 </body>
 </html>
