@@ -597,6 +597,9 @@ class Registry:
         self.pending_restore = None
         self.started = time.time()
         self.last_touch = self.started
+        self.store = session_store_dir(cfg)
+        if not getattr(cfg, "no_store", False):
+            os.makedirs(self.store, exist_ok=True)
 
     def launch(self, opts):
         sid = secrets.token_hex(3)
@@ -607,7 +610,16 @@ class Registry:
             cfg.relay = opts["relay"]
         session = Session(cfg, self.curl, manager=self, sid=sid)
         session.pending_restore = self.pending_restore
+        if session.pending_restore:
+            session.pending_restore_from = "the page"
         self.pending_restore = None
+        # Nothing from the page? Then start from what the helper kept last time, so a world does
+        # not depend on which origin the visitor happened to press PLAY on.
+        if session.pending_restore is None and opts.get("restore", True):
+            kept = self.newest_stored(opts.get("version") or DEFAULT_VERSION)
+            if kept:
+                session.pending_restore, name = kept
+                session.pending_restore_from = "the helper's own copy (%s)" % name
         with self.lock:
             self.sessions[sid] = session
             self.order.append(sid)
@@ -622,6 +634,58 @@ class Registry:
         question about the helper rather than about one of its sessions."""
         with self.lock:
             self.last_touch = time.time()
+
+    # ---- keeping a session, and starting the next one from it
+    def store_session(self, session):
+        """Copy a finished session's bundle where the *next* launch can find it, whichever origin
+        started this one."""
+        if getattr(self.cfg, "no_store", False) or not session.result:
+            return None
+        if not os.path.exists(session.bundle_path):
+            return None
+        version = (session.instance or {}).get("version") or "unknown"
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", "%s-%s" % (version, session.sid))
+        dest = os.path.join(self.store, safe + ".zip")
+        try:
+            shutil.copy2(session.bundle_path, dest)
+        except OSError as exc:
+            session.log("could not keep the session for next time: %s" % exc)
+            return None
+        session.log("kept this session for next time: %s (%s)"
+                    % (dest, ", ".join(session.result.get("worlds") or []) or "no world yet"))
+        self.prune_store()
+        return dest
+
+    def prune_store(self):
+        keep = max(1, int(getattr(self.cfg, "keep_sessions", 5) or 5))
+        try:
+            files = sorted((os.path.join(self.store, n) for n in os.listdir(self.store)
+                            if n.endswith(".zip")), key=os.path.getmtime, reverse=True)
+        except OSError:
+            return
+        for old in files[keep:]:
+            try:
+                os.unlink(old)
+            except OSError:
+                pass
+
+    def newest_stored(self, version):
+        """The most recent kept session for a version, for a launch that has nothing from the page."""
+        if getattr(self.cfg, "no_store", False):
+            return None
+        try:
+            candidates = [os.path.join(self.store, n) for n in os.listdir(self.store)
+                          if n.endswith(".zip") and n.startswith(re.sub(r"[^A-Za-z0-9._-]", "_", version) + "-")]
+        except OSError:
+            return None
+        if not candidates:
+            return None
+        newest = max(candidates, key=os.path.getmtime)
+        try:
+            with open(newest, "rb") as fh:
+                return fh.read(), os.path.basename(newest)
+        except OSError:
+            return None
 
     def pick(self, sid=None):
         with self.lock:
@@ -922,9 +986,12 @@ class Session:
             self._prepare_root()
             if getattr(self, "pending_restore", None):
                 try:
+                    self.log("putting your last session back, from %s"
+                             % getattr(self, "pending_restore_from", "a saved bundle"))
                     self.restore(self.pending_restore)
                 except Exception as exc:  # noqa: BLE001
                     self.log("could not put the previous session back: %s" % exc)
+            self._preseed_options()
             mc_version = opts["version"]
             required = 21
 
@@ -1671,6 +1738,21 @@ class Session:
         cmd += materialise(game_args, sub, features)
         return cmd, classpath
 
+    def _preseed_options(self):
+        """A brand new session has no options.txt, and Minecraft's title screen then asks whether to
+        turn the narrator on - every single time, for somebody who never wanted it. One line fixes
+        that; anything restored from a previous session still wins, because this writes only when
+        there is nothing there."""
+        path = os.path.join(self.game_dir, "options.txt")
+        if os.path.exists(path):
+            return
+        try:
+            with open(path, "w") as fh:
+                fh.write("narrator:0\n")
+            self.log("wrote a starter options.txt (narrator off, so the title screen does not ask)")
+        except OSError:
+            pass
+
     def _collect(self):
         self._phase("collect", "collecting what the session wrote", check_cancel=False)
         wanted = ["saves", "logs", "crash-reports", "screenshots", "config",
@@ -1725,6 +1807,11 @@ class Session:
             "exitCode": self.exit_code,
             "collectedAt": time.time(),
         }
+        if self.manager:
+            try:
+                self.manager.store_session(self)
+            except Exception as exc:  # noqa: BLE001 - keeping it is best-effort
+                self.log("could not keep this session for next time: %s" % exc)
         self.log("collected %d files (%.1f MB) into session.zip%s" % (
             len(files), total / 1048576.0,
             " - worlds: " + ", ".join(worlds) if worlds else ""))
@@ -2093,6 +2180,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "platform": {"os": os_name(), "arch": os_arch(), "version": os_version()},
                 "sandbox": (s.root if s else reg.cfg.root),
                 "sessions": len(reg.sessions),
+                "store": {"dir": reg.store,
+                          "kept": len([n for n in os.listdir(reg.store) if n.endswith(".zip")])
+                                  if os.path.isdir(reg.store) else 0},
                 "proxy": self.server.curl.proxy or "direct",
                 "relay": (s.cfg.relay if s else reg.cfg.relay) or None,
                 "downloads": self.server.curl.bytes_in,
@@ -2426,6 +2516,26 @@ SHIPPED = (("helper/webmc_helper.py", 0o755),
            ("page/index.html", 0o644))
 
 
+def session_store_dir(cfg=None):
+    """Where a finished session is kept so the next launch can start from it.
+
+    Your world has to live somewhere between sessions, and the browser is the wrong only place for
+    it: storage belongs to an origin, and this launcher legitimately runs on two of them (the helper's
+    own page at 127.0.0.1:7645, and a hosted copy on github.io). A session saved by one is invisible
+    to the other, which is exactly how worlds and options come to reset. So the helper keeps a copy
+    of each session's bundle as well, and restores from it when the page has nothing to offer.
+    """
+    if cfg is not None and getattr(cfg, "store", None):
+        return os.path.abspath(os.path.expanduser(cfg.store))
+    if os_name() == "osx":
+        base = "~/Library/Application Support/webmc"
+    elif os_name() == "windows":
+        base = os.path.join(os.environ.get("LOCALAPPDATA") or "~", "webmc")
+    else:
+        base = os.path.join(os.environ.get("XDG_DATA_HOME") or "~/.local/share", "webmc")
+    return os.path.expanduser(os.path.join(base, "sessions"))
+
+
 def installed_paths():
     return {"dir": os.path.expanduser(INSTALLED_DIR),
             "plist": os.path.expanduser(AGENT_PLIST),
@@ -2646,6 +2756,13 @@ def audit(root=None, cache=None, clean=False, log=print):
                    " - that process is gone, so this is litter" if item["abandoned"]
                    else " - running now"))
         log("  %-20s %.1f MB" % ("", item["bytes"] / 1048576.0))
+    store = session_store_dir()
+    if os.path.isdir(store):
+        kept = sorted(n for n in os.listdir(store) if n.endswith(".zip"))
+        log("  %-20s %s" % ("kept sessions", store))
+        log("  %-20s %d session(s), %.1f MB - your worlds and options, so the next launch does not "
+            % ("", len(kept), size_of(store) / 1048576.0))
+        log("  %-20s start empty (--forget-sessions removes them)" % "")
     if cache:
         path = os.path.abspath(os.path.expanduser(cache))
         size = size_of(path) if os.path.isdir(path) else 0
@@ -2774,6 +2891,15 @@ def parse_args(argv):
                     help="say what this project has left on the machine, then exit")
     ap.add_argument("--audit-clean", action="store_true",
                     help="with --audit: remove every leftover (never a running session)")
+    ap.add_argument("--store", default=os.environ.get("WEBMC_STORE") or None, metavar="DIR",
+                    help="where finished sessions are kept so the next launch starts from them "
+                         "(default: a webmc/sessions folder in your application data)")
+    ap.add_argument("--keep-sessions", type=int, default=5, metavar="N",
+                    help="how many finished sessions to keep (default 5)")
+    ap.add_argument("--no-store", action="store_true",
+                    help="keep nothing between sessions: every launch starts from a clean sandbox")
+    ap.add_argument("--forget-sessions", action="store_true",
+                    help="delete the kept sessions (your worlds and options) and exit")
     ap.add_argument("--idle-exit", type=int, default=0, metavar="SECONDS",
                     help="shut down after this long with nobody using the page (0 = never; the "
                          "background launcher passes 1800 so a backgrounded helper does not "
@@ -2855,6 +2981,22 @@ def main(argv=None):
     if args.audit:
         audit(root=cfg.root if os.path.isdir(cfg.root) else None,
               cache=cfg.cache, clean=args.audit_clean)
+        return 0
+
+    if args.forget_sessions:
+        store = session_store_dir(cfg)
+        freed = 0
+        kept = 0
+        if os.path.isdir(store):
+            for name in os.listdir(store):
+                path = os.path.join(store, name)
+                try:
+                    freed += os.path.getsize(path)
+                    os.unlink(path)
+                    kept += 1
+                except OSError:
+                    pass
+        print("  removed %d kept session(s) from %s (%.1f MB)" % (kept, store, freed / 1048576.0))
         return 0
 
     if args.uninstall:
@@ -2948,7 +3090,7 @@ def main(argv=None):
             " + " + opts["loaderKind"] if opts["loaderKind"] not in ("none", "") else " vanilla",
             ", ".join(opts["mods"]) or "no mods"))
         print("")
-        session.start(opts)
+        registry.launch(opts)
 
     if not args.server_only:
         print("")
@@ -2968,7 +3110,7 @@ def main(argv=None):
         stop_watchdog.set()
         registry.stop_all()
         if not cfg.keep:
-            session.cleanup()
+            registry.cleanup_all()
         else:
             print("  --keep was given: %s is still there" % cfg.root)
         httpd.server_close()

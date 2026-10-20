@@ -1202,7 +1202,8 @@ function showReceipt(res, cleanup, sid){
     lines.push((res.worlds && res.worlds.length)
       ? "<b>" + res.worlds.length + " world(s)</b> saved to this browser: " + res.worlds.join(", ")
       : "No world was created in this session.");
-    lines.push("<b>" + res.files + " files</b> (" + fmt(res.bytes) + ") kept in this browser.");
+    lines.push("<b>" + res.files + " files</b> (" + fmt(res.bytes) + ") kept in this browser and by " +
+               "the helper, so the next launch starts from them whichever page you use.");
     if (res.hasCrash) lines.push("A crash report was included — it is in the zip below.");
   }
   if (cleanup && cleanup.gone)
@@ -1272,7 +1273,10 @@ async function launch(){
       username: $("username").value.trim() || "Player",
       memory: $("memory").value.trim() || "2G",
       assets: $("assets").value === "1",
-      relay: $("relay").value.trim() || null
+      relay: $("relay").value.trim() || null,
+      // the helper keeps its own copy of the last session, so "restore" also decides whether to
+      // start from that when this browser has nothing (a different origin does exactly that)
+      restore: $("restore").checked
     })})).json();
     state.result = null;
     logLine("[page] session " + r.id + " started", "g");
