@@ -76,7 +76,9 @@ fi
 
 # Background: detached, no window to keep open, and it ends by itself when nobody is using it.
 LOG="${TMPDIR:-/tmp}/webmc-helper-boot.log"
-nohup "$PY" -u webmc_helper.py "${ARGS[@]}" --idle-exit 1800 "$@" >"$LOG" 2>&1 &
+  # six hours, not thirty minutes: a page can sit open all afternoon and the point of this
+  # helper is to still be there when its owner comes back to it.
+  nohup "$PY" -u webmc_helper.py "${ARGS[@]}" --idle-exit 21600 "$@" >"$LOG" 2>&1 &
 HELPER_PID=$!
 sleep 2
 

@@ -3509,11 +3509,16 @@ def sweep_stale_sandboxes(older_than=6 * 3600, keep=None, log=print):
         owner = read_owner(path)
         if not re.fullmatch(r"webmc-[0-9a-f]{8}", name) and owner is None:
             continue
-        abandoned = owner is not None and not pid_alive(owner.get("pid"))
         try:
             age = now - os.path.getmtime(path)
         except OSError:
             continue
+        # Ours with no owner file can only mean a hard kill in the first second of a session, before
+        # the note was written. Ours by name, so a quarter of an hour is enough to be sure it is not
+        # somebody's session that is simply very quiet.
+        abandoned = owner is not None and not pid_alive(owner.get("pid"))
+        if owner is None and re.fullmatch(r"webmc-[0-9a-f]{8}", name) and age > 900:
+            abandoned = True
         # Two reasons to delete: the helper that owned it is gone (so nobody will ever
         # clean it), or it is simply old. The first one is why this is fast: a sandbox
         # left by a crash is removed on the next run, not six hours later.
@@ -3627,7 +3632,11 @@ def agent_plist_text(python, helper, page_url, port):
   <key>ProgramArguments</key>
   <array>%s</array>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><false/>
+  <!-- Come back if it ever stops: whether it crashed or exited on its own after a long quiet spell,
+       launchd starts it again in seconds and it deletes its sandbox on the way out, so nothing
+       accumulates. This is what makes "installed" mean "always there" instead of "was there once". -->
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
   <key>WorkingDirectory</key><string>%s</string>
   <key>StandardOutPath</key><string>%s</string>
   <key>StandardErrorPath</key><string>%s</string>
@@ -4121,6 +4130,8 @@ def enforce_deadlines(registry, stop, log=print, every=10.0):
             newest = registry.pick()
         label = newest.last_touch if newest else registry.last_touch
         idle_for = time.time() - label
+        # A page that is open counts as interest even when nobody is clicking: the page pings us
+        # every twenty seconds, which is what stops "left the tab open, came back to a dead helper".
         idle_limit = getattr(registry.cfg, "idle_exit", 0) or 0
         busy = any(s.state == "running" for s in list(registry.sessions.values()))
         if idle_limit and not busy and idle_for > idle_limit:
